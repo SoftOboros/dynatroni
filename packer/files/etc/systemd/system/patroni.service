@@ -1,0 +1,23 @@
+[Unit]
+Description=Patroni PostgreSQL HA Cluster Manager
+Documentation=https://patroni.readthedocs.io/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+
+ExecStartPre=/usr/local/bin/dynatroni-configure.sh
+ExecStart=/usr/local/bin/patroni /etc/patroni/patroni.yml
+
+Restart=on-failure
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=patroni
+
+[Install]
+WantedBy=multi-user.target

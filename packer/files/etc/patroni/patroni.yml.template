@@ -1,0 +1,52 @@
+# Patroni configuration template (example)
+# Replace placeholders or use dynatroni-configure.sh at boot.
+
+scope: ${PATRONI_SCOPE}
+name: ${PATRONI_NODE_NAME}
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: ${PATRONI_CONNECT_ADDRESS}:8008
+
+dynamodb:
+  region: ${AWS_REGION}
+  table_name: ${DYNAMODB_TABLE}
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: 'on'
+        max_wal_senders: 5
+        max_replication_slots: 5
+        synchronous_commit: 'off'
+        listen_addresses: '*'
+        max_connections: 200
+        shared_buffers: 256MB
+        effective_cache_size: 768MB
+
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+    - locale: C.UTF-8
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: ${PATRONI_CONNECT_ADDRESS}:5432
+  data_dir: /data/pgdata
+  bin_dir: /usr/lib/postgresql/16/bin
+
+  authentication:
+    replication:
+      username: replicator
+      password: ${REPLICATOR_PASSWORD}
+    superuser:
+      username: postgres
+      password: ${POSTGRES_PASSWORD}

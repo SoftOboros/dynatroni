@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dynatroni"
+version = "0.1.0"
+description = "DynamoDB DCS backend for Patroni PostgreSQL HA"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Softoboros Project"}
+]
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: System :: Clustering",
+]
+dependencies = [
+    "patroni>=3.0.0",
+    "boto3>=1.26.0",
+]
+
+[project.entry-points."patroni.dcs"]
+dynamodb = "dynatroni.dynamodb:DynamoDB"
+
+[project.urls]
+Homepage = "https://github.com/softoboros/dynatroni"
+Source = "https://github.com/softoboros/dynatroni"
+
+[tool.setuptools.packages.find]
+include = ["dynatroni*"]
