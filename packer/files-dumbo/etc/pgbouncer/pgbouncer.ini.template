@@ -1,0 +1,53 @@
+;; pgbouncer configuration template
+;; Variables are substituted by envsubst at boot time
+
+[databases]
+;; Wildcard entry - connects to any database on the local PostgreSQL
+* = host=127.0.0.1 port=5432
+
+[pgbouncer]
+;; Connection settings
+listen_addr = 0.0.0.0
+listen_port = 6432
+unix_socket_dir = /var/run/pgbouncer
+
+;; Authentication
+;; Use scram-sha-256 to match PostgreSQL 16 default
+auth_type = scram-sha-256
+auth_file = /etc/pgbouncer/userlist.txt
+
+;; Pool settings
+pool_mode = ${PGBOUNCER_POOL_MODE}
+max_client_conn = ${PGBOUNCER_MAX_CLIENT_CONN}
+default_pool_size = ${PGBOUNCER_DEFAULT_POOL_SIZE}
+min_pool_size = ${PGBOUNCER_MIN_POOL_SIZE}
+reserve_pool_size = ${PGBOUNCER_RESERVE_POOL_SIZE}
+max_db_connections = ${PGBOUNCER_MAX_DB_CONNECTIONS}
+
+;; Timeouts
+server_idle_timeout = ${PGBOUNCER_SERVER_IDLE_TIMEOUT}
+server_connect_timeout = 15
+server_login_retry = 15
+query_timeout = 0
+query_wait_timeout = 120
+client_idle_timeout = 0
+client_login_timeout = 60
+
+;; Logging
+log_connections = 0
+log_disconnections = 0
+log_pooler_errors = 1
+logfile = /var/log/pgbouncer/pgbouncer.log
+pidfile = /var/run/pgbouncer/pgbouncer.pid
+
+;; Admin access (connect to pgbouncer database for stats)
+admin_users = ${POSTGRES_USER}
+stats_users = ${POSTGRES_USER}
+
+;; Security
+ignore_startup_parameters = extra_float_digits
+
+;; TLS (disabled by default - connections are local)
+;; Uncomment for external pgbouncer exposure
+; server_tls_sslmode = prefer
+; client_tls_sslmode = disable

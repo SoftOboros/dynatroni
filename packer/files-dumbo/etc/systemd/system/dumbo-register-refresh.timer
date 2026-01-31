@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh dumbo registration in DynamoDB every 2 minutes
+After=patroni.service
+Requires=dumbo-register-refresh.service
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=2min
+Unit=dumbo-register-refresh.service
+
+[Install]
+WantedBy=multi-user.target

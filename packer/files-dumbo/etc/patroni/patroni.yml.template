@@ -1,0 +1,138 @@
+# Patroni configuration template for Softoboros Dumbo PostgreSQL HA
+# Variables are substituted by dumbo-patroni-configure.sh at boot time:
+#   ${NODE_NAME}           - Instance ID or hostname
+#   ${PRIVATE_IP}          - Private IP from IMDS
+#   ${DYNAMODB_TABLE}      - DynamoDB table name for DCS
+#   ${FAILOVER_TIME}       - Estimated max failover time (from SSM, default 60s)
+#   ${PATRONI_TTL}         - Leader lock TTL (= failover_time)
+#   ${PATRONI_LOOP_WAIT}   - HA cycle interval (= failover_time / 3)
+#   ${PATRONI_RETRY_TIMEOUT} - DCS retry timeout (= failover_time / 3)
+#   ${REPLICATOR_PASSWORD} - Password for replication user
+#   ${POSTGRES_PASSWORD}   - Password for postgres superuser
+
+scope: softoboros-dumbo
+name: ${NODE_NAME}
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: ${PRIVATE_IP}:8008
+
+# DynamoDB as Distributed Configuration Store
+# Benefits: No quorum needed, single node can operate, AWS-native
+# The failover_time parameter is the single "dial" for cost vs responsiveness:
+#   - 15s  = Fast failover, higher DynamoDB costs (~24 ops/min)
+#   - 60s  = Balanced (default, ~6 ops/min)
+#   - 180s = Cost optimized, slower failover (~2 ops/min)
+# Set via SSM parameter: /softoboros/patroni/failover_time
+dynamodb:
+  region: ca-central-1
+  table_name: ${DYNAMODB_TABLE}
+  failover_time: ${FAILOVER_TIME}
+
+bootstrap:
+  # DCS configuration - shared across all cluster members
+  # Values derived from failover_time (set via SSM /softoboros/patroni/failover_time)
+  dcs:
+    ttl: ${PATRONI_TTL}
+    loop_wait: ${PATRONI_LOOP_WAIT}
+    retry_timeout: ${PATRONI_RETRY_TIMEOUT}
+    maximum_lag_on_failover: 1048576  # 1MB lag threshold
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        # Replication settings
+        wal_level: replica
+        hot_standby: 'on'
+        max_wal_senders: 5
+        max_replication_slots: 5
+        # Async replication (faster writes, minimal lag in practice)
+        synchronous_commit: 'off'
+        # Connection settings (must match 99-softoboros.conf)
+        listen_addresses: '*'
+        max_connections: 200
+        superuser_reserved_connections: 3
+        # Memory settings (overridden by 99-memory.conf)
+        shared_buffers: 256MB
+        effective_cache_size: 768MB
+        work_mem: 8MB
+        maintenance_work_mem: 64MB
+        # WAL settings
+        wal_buffers: 16MB
+        min_wal_size: 1GB
+        max_wal_size: 4GB
+        # Query planner (gp3 EBS optimizations)
+        random_page_cost: 1.1
+        effective_io_concurrency: 200
+        # Logging
+        log_connections: 'on'
+        log_disconnections: 'on'
+        log_line_prefix: '%t [%p] %u@%d '
+        log_timezone: 'UTC'
+        # Timeouts
+        idle_in_transaction_session_timeout: 600000
+        # pgvector optimization
+        max_parallel_maintenance_workers: 4
+
+  # Bootstrap method for new replicas
+  method: pg_basebackup
+  pg_basebackup:
+    checkpoint: fast
+    max-rate: 100M
+
+  # pg_hba.conf for cluster (replication + VPC access)
+  pg_hba:
+    - local   all             postgres                                peer
+    - local   all             all                                     scram-sha-256
+    - host    replication     replicator      127.0.0.1/32            scram-sha-256
+    - host    replication     replicator      ::1/128                 scram-sha-256
+    - host    replication     replicator      10.20.0.0/16            scram-sha-256
+    - host    all             all             10.20.0.0/16            scram-sha-256
+    - host    all             all             0.0.0.0/0               scram-sha-256
+
+  # Initial database setup (Patroni runs this on first leader)
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+    - locale: C.UTF-8
+
+  # Users to create during bootstrap
+  users:
+    replicator:
+      password: ${REPLICATOR_PASSWORD}
+      options:
+        - replication
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: ${PRIVATE_IP}:5432
+  data_dir: /data/pgdata/16/main
+  bin_dir: /usr/lib/postgresql/16/bin
+  config_dir: /etc/postgresql/16/main
+  # Note: Don't use custom_conf for directories - it generates 'include' not 'include_dir'
+  # All PostgreSQL settings should be in bootstrap.dcs.postgresql.parameters instead
+
+  authentication:
+    replication:
+      username: replicator
+      password: ${REPLICATOR_PASSWORD}
+    superuser:
+      username: postgres
+      password: ${POSTGRES_PASSWORD}
+
+  # pg_rewind uses superuser credentials
+  pg_rewind:
+    username: postgres
+    password: ${POSTGRES_PASSWORD}
+
+  # Callback scripts (optional, for DNS failover)
+  callbacks:
+    on_start: /usr/local/bin/dumbo-patroni-callback.sh
+    on_stop: /usr/local/bin/dumbo-patroni-callback.sh
+    on_role_change: /usr/local/bin/dumbo-patroni-callback.sh
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false

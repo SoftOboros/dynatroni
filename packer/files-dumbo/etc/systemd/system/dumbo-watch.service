@@ -1,0 +1,9 @@
+[Unit]
+Description=PostgreSQL/pgbouncer health watchdog
+After=postgresql@16-main.service dumbo-pgbouncer.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dumbo-watch.sh
+StandardOutput=journal
+StandardError=journal

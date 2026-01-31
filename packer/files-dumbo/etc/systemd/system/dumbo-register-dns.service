@@ -1,0 +1,21 @@
+[Unit]
+Description=Register Dumbo PostgreSQL with Cloud Map DNS
+# Patroni HA: depend on patroni.service which manages PostgreSQL lifecycle
+# Note: Patroni callbacks handle primary DNS registration on role change
+After=patroni.service dumbo-init.service
+Requires=patroni.service
+Wants=dumbo-init.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dumbo-register-dns.sh register
+ExecStop=/usr/local/bin/dumbo-register-dns.sh deregister
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+# Deregister on shutdown
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

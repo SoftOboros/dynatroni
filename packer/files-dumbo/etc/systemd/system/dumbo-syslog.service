@@ -1,0 +1,15 @@
+[Unit]
+Description=Configure syslog forwarding for dumbo
+After=network-online.target dumbo-secrets.service
+Before=rsyslog.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/softoboros-syslog-forward.sh dumbo
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

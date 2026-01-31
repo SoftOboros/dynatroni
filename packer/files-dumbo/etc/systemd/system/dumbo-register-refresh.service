@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh dumbo registration in DynamoDB system table
+After=network-online.target patroni.service
+Wants=network-online.target
+Requires=patroni.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dumbo-register-refresh.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=pgbouncer connection pooler for PostgreSQL
+# Patroni HA: depend on patroni.service which manages PostgreSQL lifecycle
+After=patroni.service dumbo-init.service dumbo-secrets.service
+Requires=patroni.service
+Wants=dumbo-secrets.service
+
+[Service]
+Type=forking
+User=postgres
+Group=postgres
+ExecStartPre=+/usr/local/bin/dumbo-pgbouncer-config.sh
+ExecStart=/usr/sbin/pgbouncer -d /etc/pgbouncer/pgbouncer.ini
+ExecReload=/bin/kill -HUP $MAINPID
+PIDFile=/var/run/pgbouncer/pgbouncer.pid
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

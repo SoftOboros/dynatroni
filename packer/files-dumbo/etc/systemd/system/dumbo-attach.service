@@ -1,0 +1,15 @@
+[Unit]
+Description=Attach EBS volume for PostgreSQL data
+After=network-online.target
+Wants=network-online.target
+Before=postgresql@16-main.service dumbo-configure-pg.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dumbo-attach.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

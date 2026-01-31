@@ -1,0 +1,16 @@
+[Unit]
+Description=Configure PostgreSQL memory and pg_hba.conf from SSM parameters
+After=dumbo-secrets.service dumbo-attach.service
+Wants=dumbo-secrets.service
+# Patroni HA: run before patroni.service which manages PostgreSQL
+Before=patroni.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dumbo-configure-pg.sh /etc/default/dumbo-secrets
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

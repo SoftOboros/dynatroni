@@ -1,0 +1,47 @@
+[Unit]
+Description=Patroni PostgreSQL HA Cluster Manager
+Documentation=https://patroni.readthedocs.io/
+After=network-online.target dumbo-attach.service dumbo-secrets.service
+Wants=network-online.target
+Requires=dumbo-attach.service dumbo-secrets.service
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+
+# Cold boot check: wait for designated leader if we're in a different AZ
+# This prevents a stale replica from becoming leader after full cluster shutdown
+ExecStartPre=+/usr/local/bin/dumbo-cold-boot-check.sh
+
+# Generate configuration from template before starting
+ExecStartPre=+/usr/local/bin/dumbo-patroni-configure.sh
+
+# Start Patroni (it manages PostgreSQL lifecycle)
+ExecStart=/usr/local/bin/patroni /etc/patroni/patroni.yml
+
+# Graceful shutdown
+ExecStop=/usr/bin/kill -INT $MAINPID
+TimeoutStopSec=120
+
+# Reload configuration
+ExecReload=/usr/bin/kill -HUP $MAINPID
+
+# Restart on failure
+Restart=on-failure
+RestartSec=10
+
+# Environment
+Environment=PATRONI_SCOPE=softoboros-dumbo
+Environment=PATRONI_LOGLEVEL=INFO
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=patroni
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=Initialize PostgreSQL databases (first boot)
+# Patroni HA: depend on patroni.service which manages PostgreSQL lifecycle
+After=patroni.service dumbo-secrets.service dumbo-configure-pg.service
+Requires=patroni.service
+Wants=dumbo-secrets.service dumbo-configure-pg.service
+Before=dumbo-register-dns.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dumbo-init.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
