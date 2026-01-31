@@ -703,56 +703,22 @@ class DynamoDB(AbstractDCS):
         """
         Watch for changes in cluster state.
 
-        DynamoDB doesn't support native watches, so we poll with backoff.
-        Returns True if state changed (leader identity changed), False on timeout.
+        DynamoDB doesn't support native watches. Instead of polling (which would
+        consume many API calls), we simply sleep for the timeout period.
 
-        Note: We compare leader identity (name), not version. Version changes on
-        every heartbeat, which would cause a tight polling loop. We only care
-        about actual leadership changes.
+        Leader changes are detected by the subsequent get_cluster() call.
+        Max detection delay = loop_wait, which is acceptable for failover.
 
-        Rate limiting: Enforces minimum interval between returns to prevent
-        tight loops when Patroni calls watch with small or zero timeouts.
+        This reduces API calls from ~10 per watch (polling every 2s) to 0.
+        Combined with batch cluster loading, total is 2 ops per HA cycle:
+        - 1 read (get_cluster batch query)
+        - 1 write (touch_member heartbeat)
         """
-        import sys
-        print(f"WATCH CALLED: timeout={timeout}", file=sys.stderr, flush=True)
-        now = time.time()
-        logger.warning(f"watch called: timeout={timeout:.1f}s, last_return={now - self._last_watch_return:.1f}s ago")
-
-        # Enforce minimum interval since last watch return (prevents tight loops)
-        # This handles cases where Patroni calls watch with small/zero timeout
-        time_since_last = now - self._last_watch_return
-        if time_since_last < self._min_watch_interval:
-            sleep_time = self._min_watch_interval - time_since_last
-            logger.info(f"watch: enforcing min interval, sleeping {sleep_time:.1f}s")
-            time.sleep(sleep_time)
-
-        start = time.time()
-        interval = 2.0  # Poll every 2 seconds
-
-        # Get initial leader identity
-        initial_leader = self._get_item('leader')
-        initial_leader_name = initial_leader.get('value') if initial_leader else None
-
-        # Ensure we wait at least min_interval even if timeout is small
+        # Enforce minimum interval to prevent tight loops
         effective_timeout = max(timeout, self._min_watch_interval)
 
-        # Wait for timeout or until leader changes
-        while time.time() - start < effective_timeout:
-            # Sleep first to avoid immediate return
-            remaining = effective_timeout - (time.time() - start)
-            if remaining <= 0:
-                break
-            time.sleep(min(interval, remaining))
-
-            leader_item = self._get_item('leader')
-            current_leader_name = leader_item.get('value') if leader_item else None
-
-            # Only return True if leader identity changed (failover occurred)
-            if current_leader_name != initial_leader_name:
-                logger.info(f"watch: leader changed from {initial_leader_name} to {current_leader_name}")
-                self._last_watch_return = time.time()
-                return True
+        logger.debug(f"watch: sleeping {effective_timeout:.1f}s")
+        time.sleep(effective_timeout)
 
         self._last_watch_return = time.time()
-        logger.info(f"watch: timeout after {time.time() - start:.1f}s")
-        return False
+        return False  # Let get_cluster() detect actual changes
