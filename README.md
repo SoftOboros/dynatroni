@@ -63,11 +63,20 @@ scope: my-cluster
 name: node1
 
 dynamodb:
-  # Optional: if omitted, boto3 uses its normal region resolution
   region: us-east-1
   table_name: patroni-dynamodb
+  # Single dial for cost vs responsiveness tradeoff:
+  #   15s  = fast failover, ~24 DynamoDB ops/min
+  #   60s  = balanced (default), ~6 ops/min
+  #   180s = cost optimized, ~2 ops/min
+  failover_time: 60
   # Optional: for local testing with DynamoDB Local
   # endpoint_url: http://localhost:8000
+
+# Timing values are derived from failover_time:
+#   ttl = failover_time
+#   loop_wait = failover_time / 3
+#   retry_timeout = failover_time / 3
 
 # ... rest of patroni config
 ```
