@@ -6,10 +6,11 @@ set -euo pipefail
 #
 # Behavior:
 #   1. Check DynamoDB for cold_boot_leader record (written when solo leader shuts down)
-#   2. If we're in the same AZ as the cold boot leader, proceed immediately
-#   3. If we're in a different AZ, wait for the cold boot leader to come up first
-#   4. If DUMBO_FORCE_LEADER_PROMOTION=true (from user_data), skip waiting
-#   5. If no cold_boot_leader record exists, proceed normally
+#   2. AWS (IMDS available): Use AZ-based preference - same AZ proceeds immediately
+#   3. Docker (no IMDS): Use volume_id matching - same volume proceeds immediately
+#   4. If different AZ/volume, wait for the cold boot leader to come up first
+#   5. If DUMBO_FORCE_LEADER_PROMOTION=true, skip waiting
+#   6. If no cold_boot_leader record exists, use checkpoint timestamp election
 #
 # This prevents a replica with stale data from becoming leader during cold start
 
@@ -29,33 +30,90 @@ if [[ -f "$SECRETS_FILE" ]]; then
   PATRONI_DYNAMODB_TABLE=${PATRONI_DYNAMODB_TABLE:-softoboros-patroni}
 fi
 
-# Get instance metadata
+# Get instance metadata (AWS) or use environment (Docker)
 get_imds_token() {
   curl -sX PUT "http://169.254.169.254/latest/api/token" \
-    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null || echo ""
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" --connect-timeout 2 2>/dev/null || echo ""
 }
 
+# Mode: "aws" (IMDS available) or "docker" (no IMDS, use volume matching)
+MODE="aws"
 TOKEN=$(get_imds_token)
+
 if [[ -z "$TOKEN" ]]; then
-  echo "$LOG_PREFIX WARNING: Failed to get IMDS token, proceeding without cold boot check"
-  exit 0
+  echo "$LOG_PREFIX No IMDS available - using Docker/local mode with volume matching"
+  MODE="docker"
+  # Docker mode: use hostname as instance ID, get region from env
+  INSTANCE_ID="${HOSTNAME:-$(hostname)}"
+  AZ=""
+  MY_AZ_SUFFIX=""
+  REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ca-central-1}}"
+else
+  INSTANCE_ID=$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "")
+  AZ=$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone 2>/dev/null || echo "")
+  REGION=${AZ:0:-1}
+  MY_AZ_SUFFIX="${AZ: -1}"
+  echo "$LOG_PREFIX Instance: $INSTANCE_ID, AZ: $AZ (suffix: $MY_AZ_SUFFIX)"
 fi
 
-INSTANCE_ID=$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "")
-AZ=$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone 2>/dev/null || echo "")
-REGION=${AZ:0:-1}
-MY_AZ_SUFFIX="${AZ: -1}"
-
-echo "$LOG_PREFIX Instance: $INSTANCE_ID, AZ: $AZ (suffix: $MY_AZ_SUFFIX)"
-
-# Check for force promotion flag in user data
-check_force_promotion() {
-  local user_data
-  user_data=$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/user-data 2>/dev/null || echo "")
-
-  if echo "$user_data" | grep -qE "DUMBO_FORCE_LEADER_PROMOTION\s*=\s*true"; then
-    return 0  # Force promotion enabled
+# Get the volume ID for this node (used in Docker mode for matching)
+# In Docker, this comes from DUMBO_VOLUME_ID env var or volume label
+get_my_volume_id() {
+  # Check env var first (Docker compose can set this)
+  if [[ -n "${DUMBO_VOLUME_ID:-}" ]]; then
+    echo "$DUMBO_VOLUME_ID"
+    return
   fi
+
+  # AWS: query from NVMe or EC2 API
+  if [[ "$MODE" == "aws" ]]; then
+    local device
+    device=$(df /data 2>/dev/null | tail -1 | awk '{print $1}')
+    if [[ -z "$device" ]]; then
+      echo ""
+      return
+    fi
+
+    local nvme_name
+    nvme_name=$(readlink -f "$device" 2>/dev/null | sed 's|/dev/||')
+
+    if command -v nvme &>/dev/null; then
+      nvme id-ctrl -v "/dev/${nvme_name%%p*}" 2>/dev/null | grep -oE 'vol-[a-f0-9]+' | head -1
+    else
+      aws ec2 describe-instances \
+        --region "$REGION" \
+        --instance-ids "$INSTANCE_ID" \
+        --query 'Reservations[].Instances[].BlockDeviceMappings[?DeviceName==`/dev/xvdf` || DeviceName==`/dev/sdf`].Ebs.VolumeId' \
+        --output text 2>/dev/null || echo ""
+    fi
+  else
+    echo ""
+  fi
+}
+
+MY_VOLUME_ID=""
+if [[ "$MODE" == "docker" ]]; then
+  MY_VOLUME_ID=$(get_my_volume_id)
+  echo "$LOG_PREFIX Docker mode: instance=$INSTANCE_ID, volume=${MY_VOLUME_ID:-<none>}"
+fi
+
+# Check for force promotion flag in user data (AWS) or env var (Docker)
+check_force_promotion() {
+  # Check env var first (works for both AWS and Docker)
+  if [[ "${DUMBO_FORCE_LEADER_PROMOTION:-}" == "true" ]]; then
+    return 0
+  fi
+
+  # AWS: check user data
+  if [[ "$MODE" == "aws" && -n "$TOKEN" ]]; then
+    local user_data
+    user_data=$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/user-data 2>/dev/null || echo "")
+
+    if echo "$user_data" | grep -qE "DUMBO_FORCE_LEADER_PROMOTION\s*=\s*true"; then
+      return 0  # Force promotion enabled
+    fi
+  fi
+
   return 1  # Force promotion not enabled
 }
 
@@ -291,21 +349,38 @@ main() {
 
   local leader_az_suffix
   local leader_timestamp
+  local leader_volume_id
   leader_az_suffix=$(echo "$cold_boot_leader" | jq -r '.az_suffix // empty')
   leader_timestamp=$(echo "$cold_boot_leader" | jq -r '.timestamp // empty')
+  leader_volume_id=$(echo "$cold_boot_leader" | jq -r '.volume_id // empty')
 
-  echo "$LOG_PREFIX Cold boot leader was in AZ suffix: $leader_az_suffix (recorded at: $leader_timestamp)"
+  echo "$LOG_PREFIX Cold boot leader: az_suffix=$leader_az_suffix, volume=$leader_volume_id (recorded at: $leader_timestamp)"
 
-  # If we're in the same AZ as the cold boot leader, we should proceed
-  if [[ "$MY_AZ_SUFFIX" == "$leader_az_suffix" ]]; then
-    echo "$LOG_PREFIX We are in the cold boot leader's AZ ($MY_AZ_SUFFIX) - proceeding as potential leader"
-    # Clear the record since we're taking over
-    clear_cold_boot_leader
-    exit 0
+  # Matching logic depends on mode
+  if [[ "$MODE" == "aws" ]]; then
+    # AWS mode: use AZ matching
+    if [[ -n "$MY_AZ_SUFFIX" && "$MY_AZ_SUFFIX" == "$leader_az_suffix" ]]; then
+      echo "$LOG_PREFIX We are in the cold boot leader's AZ ($MY_AZ_SUFFIX) - proceeding as potential leader"
+      clear_cold_boot_leader
+      exit 0
+    fi
+    echo "$LOG_PREFIX We are in AZ $MY_AZ_SUFFIX, cold boot leader was in AZ $leader_az_suffix"
+  else
+    # Docker mode: use volume matching
+    if [[ -n "$MY_VOLUME_ID" && -n "$leader_volume_id" && "$MY_VOLUME_ID" == "$leader_volume_id" ]]; then
+      echo "$LOG_PREFIX We have the cold boot leader's volume ($MY_VOLUME_ID) - proceeding as potential leader"
+      clear_cold_boot_leader
+      exit 0
+    fi
+    if [[ -n "$leader_volume_id" ]]; then
+      echo "$LOG_PREFIX Our volume ($MY_VOLUME_ID) != leader volume ($leader_volume_id)"
+    else
+      echo "$LOG_PREFIX No volume_id in cold boot leader record - using checkpoint fallback"
+      fallback_checkpoint_election
+      exit 0
+    fi
   fi
 
-  # We're in a different AZ - wait for the cold boot leader to come up
-  echo "$LOG_PREFIX We are in AZ $MY_AZ_SUFFIX, cold boot leader was in AZ $leader_az_suffix"
   echo "$LOG_PREFIX Waiting for cold boot leader to start first (prevents stale replica from becoming leader)"
 
   local waited=0
