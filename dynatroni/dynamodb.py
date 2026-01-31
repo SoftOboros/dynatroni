@@ -285,6 +285,39 @@ class DynamoDB(AbstractDCS):
             logger.error(f"DynamoDB query failed: {e}")
             raise DynamoDBError(f"Failed to query prefix {prefix}: {e}")
 
+    def _load_all_cluster_items(self) -> Dict[str, Dict[str, Any]]:
+        """Load all cluster items in a single query.
+
+        This replaces 9 individual API calls (8 GetItem + 1 Query) with 1 Query,
+        reducing DynamoDB costs by ~9x and eliminating rate-limit delays.
+
+        Returns:
+            Dict mapping key suffix to item, e.g.:
+            {'leader': {...}, 'config': {...}, 'members/i-xxx': {...}, ...}
+        """
+        self._rate_limit()
+
+        try:
+            response = self._table.query(
+                KeyConditionExpression='cluster_name = :cn',
+                ExpressionAttributeValues={':cn': self._cluster_name},
+                ConsistentRead=True
+            )
+
+            now = time.time()
+            items = {}
+            for item in response.get('Items', []):
+                # Filter out expired items
+                ttl = item.get('ttl', 0)
+                if not ttl or ttl > now:
+                    key = item.get('key', '')
+                    items[key] = item
+
+            return items
+        except ClientError as e:
+            logger.error(f"DynamoDB query_all failed: {e}")
+            raise DynamoDBError(f"Failed to load cluster items: {e}")
+
     # ========== AbstractDCS Implementation ==========
 
     def set_ttl(self, ttl: int) -> Optional[bool]:
@@ -315,20 +348,22 @@ class DynamoDB(AbstractDCS):
 
     def _postgresql_cluster_loader(self, path: str) -> Cluster:
         """Load a PostgreSQL cluster from DynamoDB."""
-        # Get all cluster data
+        # Get all cluster data in a single query (9 API calls -> 1)
         try:
-            # Load individual components
-            leader_item = self._get_item('leader')
-            config_item = self._get_item('config')
-            initialize_item = self._get_item('initialize')
-            sync_item = self._get_item('sync')
-            failover_item = self._get_item('failover')
-            failsafe_item = self._get_item('failsafe')
-            history_item = self._get_item('history')
-            status_item = self._get_item('status')
+            all_items = self._load_all_cluster_items()
 
-            # Load members
-            member_items = self._query_prefix('members/')
+            # Extract individual components from the single query result
+            leader_item = all_items.get('leader')
+            config_item = all_items.get('config')
+            initialize_item = all_items.get('initialize')
+            sync_item = all_items.get('sync')
+            failover_item = all_items.get('failover')
+            failsafe_item = all_items.get('failsafe')
+            history_item = all_items.get('history')
+            status_item = all_items.get('status')
+
+            # Extract members (keys starting with 'members/')
+            member_items = [item for key, item in all_items.items() if key.startswith('members/')]
 
             # Parse leader
             leader = None
