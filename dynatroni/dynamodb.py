@@ -43,10 +43,8 @@ class DynamoDB(AbstractDCS):
 
     Configuration (patroni.yml):
         dynamodb:
-            # Optional: region (falls back to AWS SDK default resolution)
-            region: us-east-1
-            # Optional: DynamoDB table name
-            table_name: patroni-dynamodb
+            region: ca-central-1
+            table_name: softoboros-patroni
             # Optional: endpoint_url for local testing
             # endpoint_url: http://localhost:8000
     """
@@ -60,14 +58,12 @@ class DynamoDB(AbstractDCS):
         # Config is already the dynamodb section, not nested
         dynamodb_config = config
 
-        self._region = dynamodb_config.get('region')
-        self._table_name = dynamodb_config.get('table_name', 'patroni-dynamodb')
+        self._region = dynamodb_config.get('region', 'ca-central-1')
+        self._table_name = dynamodb_config.get('table_name', 'softoboros-patroni')
         self._endpoint_url = dynamodb_config.get('endpoint_url')
 
         # Create DynamoDB client
-        client_kwargs = {}
-        if self._region:
-            client_kwargs['region_name'] = self._region
+        client_kwargs = {'region_name': self._region}
         if self._endpoint_url:
             client_kwargs['endpoint_url'] = self._endpoint_url
 
@@ -85,6 +81,16 @@ class DynamoDB(AbstractDCS):
         self._last_leader_version: Optional[int] = None
         self._last_leader_session: Optional[str] = None
 
+        # Track last watch() return time to enforce minimum loop spacing
+        # This prevents tight loops when Patroni calls watch with small timeouts
+        self._last_watch_return: float = 0.0
+        self._min_watch_interval: float = 10.0  # Minimum seconds between watch returns
+
+        # Rate limiting for DynamoDB operations to reduce costs
+        # Track when we last did DynamoDB operations to avoid hammering the API
+        self._last_operation_time: float = 0.0
+        self._min_operation_interval: float = 1.0  # Minimum 1 second between any operations
+
         logger.info(f"DynamoDB DCS initialized: table={self._table_name}, "
                    f"cluster={self._cluster_name}, session={self._session[:8]}...")
 
@@ -95,8 +101,18 @@ class DynamoDB(AbstractDCS):
             'key': suffix
         }
 
+    def _rate_limit(self) -> None:
+        """Enforce minimum interval between DynamoDB operations to reduce costs."""
+        now = time.time()
+        elapsed = now - self._last_operation_time
+        if elapsed < self._min_operation_interval:
+            time.sleep(self._min_operation_interval - elapsed)
+        self._last_operation_time = time.time()
+
     def _get_item(self, key_suffix: str) -> Optional[Dict[str, Any]]:
         """Get an item from DynamoDB."""
+        self._rate_limit()
+
         try:
             response = self._table.get_item(
                 Key=self._key(key_suffix),
@@ -117,6 +133,8 @@ class DynamoDB(AbstractDCS):
                   session: Optional[str] = None, condition: Optional[str] = None,
                   condition_values: Optional[Dict] = None) -> bool:
         """Put an item to DynamoDB with optional conditional write."""
+        self._rate_limit()
+
         item = {
             'cluster_name': self._cluster_name,
             'key': key_suffix,
@@ -149,6 +167,8 @@ class DynamoDB(AbstractDCS):
                      condition: Optional[str] = None,
                      condition_values: Optional[Dict] = None) -> bool:
         """Update an item in DynamoDB with optional conditional write."""
+        self._rate_limit()
+
         try:
             update_expr_parts = []
             expr_values = condition_values.copy() if condition_values else {}
@@ -187,6 +207,8 @@ class DynamoDB(AbstractDCS):
     def _delete_item(self, key_suffix: str, condition: Optional[str] = None,
                      condition_values: Optional[Dict] = None) -> bool:
         """Delete an item from DynamoDB with optional conditional delete."""
+        self._rate_limit()
+
         try:
             delete_kwargs = {'Key': self._key(key_suffix)}
             if condition:
@@ -204,6 +226,8 @@ class DynamoDB(AbstractDCS):
 
     def _query_prefix(self, prefix: str) -> List[Dict[str, Any]]:
         """Query all items with a key prefix."""
+        self._rate_limit()
+
         try:
             response = self._table.query(
                 KeyConditionExpression='cluster_name = :cn AND begins_with(#k, :prefix)',
@@ -604,19 +628,55 @@ class DynamoDB(AbstractDCS):
         Watch for changes in cluster state.
 
         DynamoDB doesn't support native watches, so we poll with backoff.
-        Returns True if state changed, False on timeout.
+        Returns True if state changed (leader identity changed), False on timeout.
+
+        Note: We compare leader identity (name), not version. Version changes on
+        every heartbeat, which would cause a tight polling loop. We only care
+        about actual leadership changes.
+
+        Rate limiting: Enforces minimum interval between returns to prevent
+        tight loops when Patroni calls watch with small or zero timeouts.
         """
+        import sys
+        print(f"WATCH CALLED: timeout={timeout}", file=sys.stderr, flush=True)
+        now = time.time()
+        logger.warning(f"watch called: timeout={timeout:.1f}s, last_return={now - self._last_watch_return:.1f}s ago")
+
+        # Enforce minimum interval since last watch return (prevents tight loops)
+        # This handles cases where Patroni calls watch with small/zero timeout
+        time_since_last = now - self._last_watch_return
+        if time_since_last < self._min_watch_interval:
+            sleep_time = self._min_watch_interval - time_since_last
+            logger.info(f"watch: enforcing min interval, sleeping {sleep_time:.1f}s")
+            time.sleep(sleep_time)
+
         start = time.time()
-        interval = 1.0  # Start with 1 second polling
+        interval = 2.0  # Poll every 2 seconds
 
-        while time.time() - start < timeout:
+        # Get initial leader identity
+        initial_leader = self._get_item('leader')
+        initial_leader_name = initial_leader.get('value') if initial_leader else None
+
+        # Ensure we wait at least min_interval even if timeout is small
+        effective_timeout = max(timeout, self._min_watch_interval)
+
+        # Wait for timeout or until leader changes
+        while time.time() - start < effective_timeout:
+            # Sleep first to avoid immediate return
+            remaining = effective_timeout - (time.time() - start)
+            if remaining <= 0:
+                break
+            time.sleep(min(interval, remaining))
+
             leader_item = self._get_item('leader')
-            current_version = leader_item.get('version') if leader_item else None
+            current_leader_name = leader_item.get('value') if leader_item else None
 
-            if current_version != leader_version:
+            # Only return True if leader identity changed (failover occurred)
+            if current_leader_name != initial_leader_name:
+                logger.info(f"watch: leader changed from {initial_leader_name} to {current_leader_name}")
+                self._last_watch_return = time.time()
                 return True
 
-            time.sleep(min(interval, timeout - (time.time() - start)))
-            interval = min(interval * 1.2, 5.0)  # Backoff up to 5 seconds
-
+        self._last_watch_return = time.time()
+        logger.info(f"watch: timeout after {time.time() - start:.1f}s")
         return False
