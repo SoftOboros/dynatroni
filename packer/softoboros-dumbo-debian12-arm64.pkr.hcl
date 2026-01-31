@@ -153,8 +153,8 @@ build {
       "set -uxo pipefail",
       "echo '[packer] Installing Patroni for PostgreSQL HA'",
 
-      "# Install Python pip and dependencies",
-      "sudo apt-get install -y -qq python3-pip python3-venv python3-psycopg2",
+      "# Install Python pip and dependencies (git needed for pip install from GitHub)",
+      "sudo apt-get install -y -qq git python3-pip python3-venv python3-psycopg2",
 
       "# Install Patroni with DynamoDB DCS in a virtual environment",
       "sudo python3 -m venv /opt/patroni",
