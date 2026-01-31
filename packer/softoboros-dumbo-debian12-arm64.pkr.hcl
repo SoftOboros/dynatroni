@@ -94,12 +94,6 @@ build {
     destination = "/tmp/system_table.py"
   }
 
-  # Upload dynatroni DynamoDB DCS module (we are in dynatroni repo)
-  provisioner "file" {
-    source      = "dynatroni/"
-    destination = "/tmp/dynatroni"
-  }
-
   # Install prerequisites: AWS CLI v2, SSM Agent, utilities
   provisioner "shell" {
     inline_shebang = "/bin/bash -e"
@@ -159,12 +153,6 @@ build {
       "set -uxo pipefail",
       "echo '[packer] Installing Patroni for PostgreSQL HA'",
 
-      "# Debug: show uploaded files structure",
-      "echo '[packer] DEBUG: Contents of /tmp/pack_files/'",
-      "ls -la /tmp/pack_files/ || echo 'pack_files not found'",
-      "echo '[packer] DEBUG: Contents of /tmp/dynatroni/ (submodule)'",
-      "ls -la /tmp/dynatroni/ || echo 'dynatroni not found'",
-
       "# Install Python pip and dependencies",
       "sudo apt-get install -y -qq python3-pip python3-venv python3-psycopg2",
 
@@ -173,9 +161,9 @@ build {
       "sudo /opt/patroni/bin/pip install --upgrade pip",
       "sudo /opt/patroni/bin/pip install patroni boto3 psycopg2-binary",
 
-      "# Install dynatroni DynamoDB DCS module from submodule",
+      "# Install dynatroni DynamoDB DCS module from GitHub",
       "echo '[packer] Installing dynatroni DynamoDB DCS module'",
-      "sudo /opt/patroni/bin/pip install /tmp/dynatroni/",
+      "sudo /opt/patroni/bin/pip install git+https://github.com/SoftOboros/dynatroni.git",
 
       "# Install DynamoDB module into Patroni's DCS namespace (Patroni uses pkgutil discovery)",
       "PATRONI_DCS_PATH=$(/opt/patroni/bin/python -c 'import patroni.dcs; print(patroni.dcs.__path__[0])')",
