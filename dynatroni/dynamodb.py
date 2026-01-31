@@ -45,9 +45,25 @@ class DynamoDB(AbstractDCS):
         dynamodb:
             region: ca-central-1
             table_name: softoboros-patroni
+            failover_time: 60  # Estimated max failover time in seconds (default 60, min 15)
             # Optional: endpoint_url for local testing
             # endpoint_url: http://localhost:8000
+
+    The failover_time parameter is the single "dial" for cost vs responsiveness tradeoff.
+    All other timing parameters are derived from it:
+        - ttl = failover_time (leader lock validity)
+        - loop_wait = failover_time / 3 (HA cycle interval)
+        - retry_timeout = failover_time / 3 (DCS operation timeout)
+        - rate_limit = failover_time / 3 (min seconds between DynamoDB operations)
+
+    Examples:
+        failover_time: 15   -> Fast failover, higher DynamoDB costs (~24 ops/min)
+        failover_time: 60   -> Balanced (default, ~6 ops/min)
+        failover_time: 180  -> Cost optimized, slower failover (~2 ops/min)
     """
+
+    # Minimum allowed failover_time to prevent unsafe configurations
+    MIN_FAILOVER_TIME = 15
 
     def __init__(self, config: Dict[str, Any], mpp: Any = None) -> None:
         # config is the DCS-specific section (dynamodb: {...}), not full Patroni config
@@ -61,6 +77,21 @@ class DynamoDB(AbstractDCS):
         self._region = dynamodb_config.get('region', 'ca-central-1')
         self._table_name = dynamodb_config.get('table_name', 'softoboros-patroni')
         self._endpoint_url = dynamodb_config.get('endpoint_url')
+
+        # Failover time is the single dial for cost/responsiveness tradeoff
+        # All other timings are derived from this value
+        failover_time = max(
+            dynamodb_config.get('failover_time', 60),
+            self.MIN_FAILOVER_TIME
+        )
+
+        # Derive timing parameters from failover_time
+        # - TTL equals failover_time (leader lock validity window)
+        # - loop_wait, retry_timeout, and rate_limit are 1/3 of failover_time
+        #   This gives 3 chances to renew the leader lock before it expires
+        self._derived_ttl = failover_time
+        self._derived_loop_wait = failover_time // 3
+        self._derived_retry_timeout = failover_time // 3
 
         # Create DynamoDB client
         client_kwargs = {'region_name': self._region}
@@ -84,15 +115,17 @@ class DynamoDB(AbstractDCS):
         # Track last watch() return time to enforce minimum loop spacing
         # This prevents tight loops when Patroni calls watch with small timeouts
         self._last_watch_return: float = 0.0
-        self._min_watch_interval: float = 10.0  # Minimum seconds between watch returns
+        self._min_watch_interval: float = float(self._derived_loop_wait)
 
         # Rate limiting for DynamoDB operations to reduce costs
-        # Track when we last did DynamoDB operations to avoid hammering the API
+        # Derived from failover_time to align with Patroni's HA cycle
         self._last_operation_time: float = 0.0
-        self._min_operation_interval: float = 1.0  # Minimum 1 second between any operations
+        self._min_operation_interval: float = float(self._derived_loop_wait)
 
         logger.info(f"DynamoDB DCS initialized: table={self._table_name}, "
-                   f"cluster={self._cluster_name}, session={self._session[:8]}...")
+                   f"cluster={self._cluster_name}, session={self._session[:8]}..., "
+                   f"failover_time={failover_time}s (ttl={self._derived_ttl}s, "
+                   f"loop_wait={self._derived_loop_wait}s)")
 
     def _key(self, suffix: str) -> Dict[str, str]:
         """Build DynamoDB key for cluster data."""
@@ -255,17 +288,25 @@ class DynamoDB(AbstractDCS):
     # ========== AbstractDCS Implementation ==========
 
     def set_ttl(self, ttl: int) -> Optional[bool]:
-        """Set the TTL for leader key."""
+        """Set the TTL for leader key.
+
+        Note: If not explicitly set via patroni.yml bootstrap.dcs.ttl,
+        the TTL defaults to the value derived from failover_time.
+        """
         self._ttl = ttl
         return None
 
     @property
     def ttl(self) -> int:
-        """Return current TTL value."""
-        return getattr(self, '_ttl', 30)
+        """Return current TTL value (derived from failover_time if not set)."""
+        return getattr(self, '_ttl', self._derived_ttl)
 
     def set_retry_timeout(self, retry_timeout: int) -> None:
-        """Set retry timeout."""
+        """Set retry timeout.
+
+        Note: If not explicitly set via patroni.yml bootstrap.dcs.retry_timeout,
+        the retry_timeout defaults to the value derived from failover_time.
+        """
         self._retry_timeout = retry_timeout
 
     def _cluster_loader(self, path: str) -> Cluster:
