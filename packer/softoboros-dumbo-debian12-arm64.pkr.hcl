@@ -33,6 +33,12 @@ variable "security_group_id" {
   default = ""
 }
 
+variable "dynatroni_ref" {
+  type        = string
+  default     = "v0.1.0"
+  description = "Git ref (branch, tag, or commit SHA) for dynatroni install"
+}
+
 locals {
   timestamp = regex_replace(timestamp(), ":|Z|T|\\+.*", "-")
 }
@@ -162,8 +168,8 @@ build {
       "sudo /opt/patroni/bin/pip install patroni boto3 psycopg2-binary",
 
       "# Install dynatroni DynamoDB DCS module from GitHub",
-      "echo '[packer] Installing dynatroni DynamoDB DCS module'",
-      "sudo /opt/patroni/bin/pip install git+https://github.com/SoftOboros/dynatroni.git",
+      "echo '[packer] Installing dynatroni DynamoDB DCS module (ref: ${var.dynatroni_ref})'",
+      "sudo /opt/patroni/bin/pip install git+https://github.com/SoftOboros/dynatroni.git@${var.dynatroni_ref}",
 
       "# Install DynamoDB module into Patroni's DCS namespace (Patroni uses pkgutil discovery)",
       "PATRONI_DCS_PATH=$(/opt/patroni/bin/python -c 'import patroni.dcs; print(patroni.dcs.__path__[0])')",
