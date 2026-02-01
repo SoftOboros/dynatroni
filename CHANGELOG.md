@@ -4,7 +4,7 @@
 
 # Changelog
 
-## 0.2.0
+## 0.1.0
 
 ### Cold Boot Leader Election
 - **Changed**: Renamed `cold_boot_leader` to `last_leader` record in DynamoDB
@@ -33,5 +33,5 @@
 - Updated configuration.md with cold boot environment variables
 - Updated operations.md with configurable timeout and troubleshooting tips
 
-## 0.1.0
+## 0.0.1
 - Initial release extracted from the source monorepo
