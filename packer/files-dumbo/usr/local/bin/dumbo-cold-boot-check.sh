@@ -111,14 +111,14 @@ load_user_data_settings() {
 
   # Extract DUMBO_COLD_BOOT_TIMEOUT if set in user data
   local timeout_val
-  timeout_val=$(echo "$user_data" | grep -oE "DUMBO_COLD_BOOT_TIMEOUT\s*=\s*[0-9]+" | grep -oE "[0-9]+")
+  timeout_val=$(echo "$user_data" | grep -oE "DUMBO_COLD_BOOT_TIMEOUT\s*=\s*[0-9]+" | grep -oE "[0-9]+" || true)
   if [[ -n "$timeout_val" ]]; then
     MAX_WAIT_SECONDS="$timeout_val"
     echo "$LOG_PREFIX Using DUMBO_COLD_BOOT_TIMEOUT=$timeout_val from user data"
   fi
 
-  # Extract DUMBO_FORCE_LEADER_PROMOTION if set in user data
-  if echo "$user_data" | grep -qE "DUMBO_FORCE_LEADER_PROMOTION\s*=\s*true"; then
+  # Extract DUMBO_FORCE_LEADER_PROMOTION if set in user data (grep -q returns 1 if no match)
+  if echo "$user_data" | grep -qE "DUMBO_FORCE_LEADER_PROMOTION\s*=\s*true" 2>/dev/null; then
     export DUMBO_FORCE_LEADER_PROMOTION=true
   fi
 }
