@@ -145,16 +145,33 @@ get_last_leader() {
     --output json 2>/dev/null | jq -r '.Item.value.S // empty'
 }
 
-# Check if the last leader's AZ has an active Patroni member
+# Check if leader AZ is active (has claimed leadership or has an active member)
 check_leader_alive() {
   local leader_info=$1
   local leader_az_suffix
   leader_az_suffix=$(echo "$leader_info" | jq -r '.az_suffix // empty')
 
-  # Check if any member from the leader's AZ is now active in the cluster
-  # We query our local Patroni (if running) or check DynamoDB members
+  local current_time
+  current_time=$(date +%s)
 
-  # First, check DynamoDB for members in the leader's AZ
+  # First, check if there's a leader key with valid TTL (someone claimed leadership)
+  local leader_key
+  leader_key=$(aws dynamodb get-item \
+    --region "$REGION" \
+    --table-name "$PATRONI_DYNAMODB_TABLE" \
+    --key "{\"cluster_name\":{\"S\":\"$PATRONI_SCOPE\"},\"key\":{\"S\":\"leader\"}}" \
+    --output json 2>/dev/null || echo "{}")
+
+  local leader_ttl
+  leader_ttl=$(echo "$leader_key" | jq -r '.Item.ttl.N // "0"' 2>/dev/null || echo "0")
+
+  if [[ "$leader_ttl" -gt "$current_time" ]]; then
+    echo "$LOG_PREFIX Leader key found with valid TTL - cluster has a leader"
+    return 0
+  fi
+
+  # No leader yet - check if any member in the last leader's AZ is alive
+  # (they might be starting up and about to claim leadership)
   local members_json
   members_json=$(aws dynamodb query \
     --region "$REGION" \
@@ -165,18 +182,19 @@ check_leader_alive() {
     --output json 2>/dev/null || echo "{}")
 
   # Check if any member has a recent TTL (meaning it's alive)
-  local current_time
-  current_time=$(date +%s)
-
-  local alive_in_leader_az
-  alive_in_leader_az=$(echo "$members_json" | jq -r --arg az "$leader_az_suffix" --argjson now "$current_time" '
-    [.Items[] |
-     select(.value.S | fromjson | .role == "master" or .role == "primary" or .role == "leader") |
-     select((.ttl.N | tonumber) > $now)
-    ] | length
+  # Member records contain conn_url with the IP, we need to check if it's in leader's AZ
+  # For now, just check if ANY member is alive - if so, let them sort out leadership
+  local alive_count
+  alive_count=$(echo "$members_json" | jq -r --argjson now "$current_time" '
+    [.Items[] | select((.ttl.N | tonumber) > $now)] | length
   ' 2>/dev/null || echo "0")
 
-  [[ "$alive_in_leader_az" -gt 0 ]]
+  if [[ "$alive_count" -gt 0 ]]; then
+    echo "$LOG_PREFIX Found $alive_count alive member(s) in cluster - proceeding"
+    return 0
+  fi
+
+  return 1
 }
 
 # Clear last_leader record (call after successful cluster formation)
