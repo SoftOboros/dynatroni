@@ -204,7 +204,7 @@ class DynamoDB(AbstractDCS):
             item = response.get('Item')
             if item and check_ttl:
                 # Check TTL - DynamoDB may not have cleaned up yet
-                ttl = item.get('ttl', 0)
+                ttl = int(item.get('ttl', 0))  # Convert Decimal to int
                 if ttl and ttl < time.time():
                     return None
             return item
@@ -330,7 +330,7 @@ class DynamoDB(AbstractDCS):
             items = []
             for item in response.get('Items', []):
                 # Filter out expired items
-                ttl = item.get('ttl', 0)
+                ttl = int(item.get('ttl', 0)) if item.get('ttl') else 0  # Convert Decimal
                 if not ttl or ttl > now:
                     items.append(item)
 
@@ -362,8 +362,8 @@ class DynamoDB(AbstractDCS):
             items = {}
             expired_keys = []
             for item in response.get('Items', []):
-                # Filter out expired items
-                ttl = item.get('ttl', 0)
+                # Filter out expired items (convert Decimal to int)
+                ttl = int(item.get('ttl', 0)) if item.get('ttl') else 0
                 key = item.get('key', '')
                 if not ttl or ttl > now:
                     items[key] = item
@@ -436,7 +436,7 @@ class DynamoDB(AbstractDCS):
                 self._last_leader_version = leader_item.get('version')
                 self._last_leader_session = leader_item.get('session')
                 leader_name = leader_item.get('value', '')
-                leader_ttl = leader_item.get('ttl', 0)
+                leader_ttl = int(leader_item.get('ttl', 0))  # Convert Decimal to int
                 logger.info(f"[cluster-load] Leader item: name={leader_name}, session={self._last_leader_session[:8] if self._last_leader_session else 'None'}..., ttl={leader_ttl}, now={int(time.time())}, ttl_remaining={leader_ttl - int(time.time()) if leader_ttl else 'N/A'}s")
                 if isinstance(leader_name, str):
                     try:
@@ -647,7 +647,7 @@ class DynamoDB(AbstractDCS):
 
             if leader_item:
                 existing_session = leader_item.get('session')
-                existing_ttl = leader_item.get('ttl', 0)
+                existing_ttl = int(leader_item.get('ttl', 0))  # Convert Decimal to int
                 logger.info(f"attempt_to_acquire_leader: existing leader found, session={existing_session[:8] if existing_session else 'None'}..., ttl={existing_ttl}, now={int(time.time())}, ttl_remaining={existing_ttl - int(time.time())}s")
 
                 # If we already hold the lock, just renew
