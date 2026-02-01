@@ -118,9 +118,10 @@ class DynamoDB(AbstractDCS):
         self._min_watch_interval: float = float(self._derived_loop_wait)
 
         # Rate limiting for DynamoDB operations to reduce costs
-        # Derived from failover_time to align with Patroni's HA cycle
+        # Set to 1/2 of loop_wait to allow read + write within each HA cycle
+        # (previously was equal to loop_wait, which caused TTL expiration)
         self._last_operation_time: float = 0.0
-        self._min_operation_interval: float = float(self._derived_loop_wait)
+        self._min_operation_interval: float = float(self._derived_loop_wait) / 2.0
 
         # Leader lock tracking for smart rate limiting
         # Allows emergency renewal when approaching TTL expiry
@@ -370,7 +371,7 @@ class DynamoDB(AbstractDCS):
                     expired_keys.append(f"{key}(ttl={ttl}, expired {int(now - ttl)}s ago)")
 
             if expired_keys:
-                logger.debug(f"Filtered out expired items: {expired_keys}")
+                logger.info(f"[cluster-load] Filtered out expired items: {expired_keys}")
 
             return items
         except ClientError as e:
@@ -412,7 +413,7 @@ class DynamoDB(AbstractDCS):
             all_items = self._load_all_cluster_items()
 
             # Debug logging for leader election issues
-            logger.debug(f"Loaded {len(all_items)} cluster items: {list(all_items.keys())}")
+            logger.info(f"[cluster-load] Loaded {len(all_items)} items: {list(all_items.keys())}")
 
             # Extract individual components from the single query result
             leader_item = all_items.get('leader')
@@ -429,12 +430,14 @@ class DynamoDB(AbstractDCS):
 
             # Parse leader
             leader = None
+            if not leader_item:
+                logger.info(f"[cluster-load] No leader item found in DynamoDB")
             if leader_item:
                 self._last_leader_version = leader_item.get('version')
                 self._last_leader_session = leader_item.get('session')
                 leader_name = leader_item.get('value', '')
                 leader_ttl = leader_item.get('ttl', 0)
-                logger.debug(f"Leader item: name={leader_name}, session={self._last_leader_session[:8] if self._last_leader_session else 'None'}..., ttl={leader_ttl}, now={int(time.time())}")
+                logger.info(f"[cluster-load] Leader item: name={leader_name}, session={self._last_leader_session[:8] if self._last_leader_session else 'None'}..., ttl={leader_ttl}, now={int(time.time())}, ttl_remaining={leader_ttl - int(time.time()) if leader_ttl else 'N/A'}s")
                 if isinstance(leader_name, str):
                     try:
                         leader_data = json.loads(leader_name)
@@ -443,7 +446,7 @@ class DynamoDB(AbstractDCS):
                         pass
                 # Find the member that is leader
                 member_names = [m.get('key', '').replace('members/', '') for m in member_items]
-                logger.debug(f"Looking for leader '{leader_name}' in members: {member_names}")
+                logger.info(f"[cluster-load] Looking for leader '{leader_name}' in members: {member_names}")
                 for m in member_items:
                     member_key = m.get('key', '')
                     member_name = member_key.replace('members/', '')
@@ -461,7 +464,7 @@ class DynamoDB(AbstractDCS):
                                     member_value
                                 )
                             )
-                            logger.debug(f"Created Leader object for {member_name}")
+                            logger.info(f"[cluster-load] Created Leader object for {member_name}")
                         except (json.JSONDecodeError, TypeError) as e:
                             logger.warning(f"Failed to create Leader: {e}")
                         break
@@ -594,26 +597,34 @@ class DynamoDB(AbstractDCS):
         return self._put_item('failsafe', value)
 
     def _update_leader(self, leader: Leader) -> bool:
-        """Update leader key - renew leadership (called by base class update_leader)."""
-        # Update TTL on leader key
-        # Note: We verify session ownership in attempt_to_acquire_leader before this is called
+        """Update leader key - renew leadership (called by base class update_leader).
+
+        CRITICAL: This bypasses rate limiting because leader renewal must happen
+        immediately to prevent TTL expiration and cluster instability.
+        """
         logger.info(f"_update_leader called: renewing TTL for {self._name} (ttl={self.ttl}s, session={self._session[:8]}...)")
         try:
-            # Use put_item to renew the entire leader record
-            success = self._put_item(
-                'leader',
-                self._name,
-                ttl_seconds=self.ttl,
-                session=self._session
-            )
-            if success:
-                # Renew the lock timestamp for TTL tracking
-                self._leader_lock_acquired_at = time.time()
-                self._is_leader = True
-                logger.info(f"_update_leader: successfully renewed TTL (expires at {int(time.time()) + self.ttl})")
-            else:
-                logger.warning("_update_leader: _put_item returned False")
-            return success
+            # Direct DynamoDB write - bypass rate limiting for leader renewal
+            # The rate limiter can delay writes by up to loop_wait seconds, which
+            # combined with the HA cycle timing, can cause TTL expiration.
+            item = {
+                'cluster_name': self._cluster_name,
+                'key': 'leader',
+                'value': self._name,
+                'version': int(time.time() * 1000000),
+                'ttl': int(time.time()) + self.ttl,
+                'session': self._session
+            }
+            self._table.put_item(Item=item)
+
+            # Renew the lock timestamp for TTL tracking
+            self._leader_lock_acquired_at = time.time()
+            self._is_leader = True
+            logger.info(f"_update_leader: successfully renewed TTL (expires at {item['ttl']})")
+            return True
+        except ClientError as e:
+            logger.warning(f"Failed to update leader: {e}")
+            return False
         except Exception as e:
             logger.warning(f"Failed to update leader: {e}")
             return False
