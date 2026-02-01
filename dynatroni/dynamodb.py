@@ -122,6 +122,11 @@ class DynamoDB(AbstractDCS):
         self._last_operation_time: float = 0.0
         self._min_operation_interval: float = float(self._derived_loop_wait)
 
+        # Leader lock tracking for smart rate limiting
+        # Allows emergency renewal when approaching TTL expiry
+        self._is_leader: bool = False
+        self._leader_lock_acquired_at: float = 0.0
+
         logger.info(f"DynamoDB DCS initialized: table={self._table_name}, "
                    f"cluster={self._cluster_name}, session={self._session[:8]}..., "
                    f"failover_time={failover_time}s (ttl={self._derived_ttl}s, "
@@ -135,11 +140,37 @@ class DynamoDB(AbstractDCS):
         }
 
     def _rate_limit(self) -> None:
-        """Enforce minimum interval between DynamoDB operations to reduce costs."""
+        """Enforce minimum interval between DynamoDB operations to reduce costs.
+
+        Smart rate limiting that:
+        1. Tracks real elapsed time - if enough time passed, no wait needed
+        2. Emergency mode for leader renewal - skip delay when approaching TTL expiry
+        3. Doesn't compound delays when Patroni is running slow
+        """
         now = time.time()
         elapsed = now - self._last_operation_time
-        if elapsed < self._min_operation_interval:
-            time.sleep(self._min_operation_interval - elapsed)
+
+        # If enough real time has already passed, no need to wait
+        # This handles the case where Patroni's loop_wait already provided the delay
+        if elapsed >= self._min_operation_interval:
+            self._last_operation_time = now
+            return
+
+        # Emergency mode: if we're leader and approaching TTL expiry, skip delay
+        # This prevents leader lock from expiring due to rate limit delays
+        if self._is_leader and self._leader_lock_acquired_at > 0:
+            time_since_lock = now - self._leader_lock_acquired_at
+            time_until_expiry = self.ttl - time_since_lock
+
+            # If less than 2x operation interval until expiry, skip delay for emergency renewal
+            if time_until_expiry < self._min_operation_interval * 2:
+                logger.warning(f"Rate limit: emergency renewal mode - {time_until_expiry:.1f}s until TTL expiry")
+                self._last_operation_time = now
+                return
+
+        # Normal case: wait the remaining time
+        remaining = self._min_operation_interval - elapsed
+        time.sleep(remaining)
         self._last_operation_time = time.time()
 
     def _get_item(self, key_suffix: str) -> Optional[Dict[str, Any]]:
@@ -530,12 +561,17 @@ class DynamoDB(AbstractDCS):
         # Note: We verify session ownership in attempt_to_acquire_leader before this is called
         try:
             # Use put_item to renew the entire leader record
-            return self._put_item(
+            success = self._put_item(
                 'leader',
                 self._name,
                 ttl_seconds=self.ttl,
                 session=self._session
             )
+            if success:
+                # Renew the lock timestamp for TTL tracking
+                self._leader_lock_acquired_at = time.time()
+                self._is_leader = True
+            return success
         except Exception as e:
             logger.warning(f"Failed to update leader: {e}")
             return False
@@ -554,7 +590,7 @@ class DynamoDB(AbstractDCS):
 
                 # If we already hold the lock, just renew
                 if existing_session == self._session:
-                    return self._update_item(
+                    success = self._update_item(
                         'leader',
                         {
                             'ttl': int(time.time()) + self.ttl,
@@ -563,43 +599,66 @@ class DynamoDB(AbstractDCS):
                         condition='#sess = :sess',
                         condition_values={':sess': self._session}
                     )
+                    if success:
+                        # Renew the lock timestamp for TTL tracking
+                        self._leader_lock_acquired_at = time.time()
+                        self._is_leader = True
+                    return success
 
                 # If TTL expired, try to take over
                 if existing_ttl < time.time():
                     # TTL expired - use unconditional put to take over
                     # This is safe because we've verified TTL expiration
-                    return self._put_item(
+                    success = self._put_item(
                         'leader',
                         self._name,
                         ttl_seconds=self.ttl,
                         session=self._session
                     )
+                    if success:
+                        self._leader_lock_acquired_at = time.time()
+                        self._is_leader = True
+                        logger.info(f"Acquired leader lock (expired TTL takeover)")
+                    return success
 
                 # Leader exists and is valid - can't acquire
+                self._is_leader = False
                 return False
 
             # No leader exists - try to create
-            return self._put_item(
+            success = self._put_item(
                 'leader',
                 self._name,
                 ttl_seconds=self.ttl,
                 session=self._session,
                 condition='attribute_not_exists(cluster_name)'
             )
+            if success:
+                self._leader_lock_acquired_at = time.time()
+                self._is_leader = True
+                logger.info(f"Acquired leader lock (new cluster)")
+            return success
 
         except DynamoDBError:
+            self._is_leader = False
             return False
         except Exception as e:
             logger.error(f"Failed to acquire leader: {e}")
+            self._is_leader = False
             return False
 
     def _delete_leader(self, leader: Optional[Leader]) -> bool:
         """Delete leader key - step down from leadership."""
-        return self._delete_item(
+        success = self._delete_item(
             'leader',
             condition='#sess = :sess',
             condition_values={':sess': self._session}
         )
+        # Clear leadership state regardless of delete success
+        # (if delete fails, we're likely not leader anyway)
+        self._is_leader = False
+        self._leader_lock_acquired_at = 0.0
+        return success
 
     def touch_member(self, data: Dict[str, Any]) -> bool:
         """Update member registration."""
