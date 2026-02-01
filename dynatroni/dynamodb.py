@@ -577,9 +577,8 @@ class DynamoDB(AbstractDCS):
         """Write failsafe topology."""
         return self._put_item('failsafe', value)
 
-    def update_leader(self, leader: Leader, last_lsn: Optional[int] = None,
-                      last_operation: Optional[int] = None, enforce_ttl: bool = False) -> bool:
-        """Update leader key - renew leadership (Patroni public API)."""
+    def _update_leader(self, leader: Leader) -> bool:
+        """Update leader key - renew leadership (called by base class update_leader)."""
         # Update TTL on leader key
         # Note: We verify session ownership in attempt_to_acquire_leader before this is called
         try:
