@@ -205,8 +205,9 @@ ensure_replicator_user() {
   return 0
 }
 
-# Record cold boot leader in DynamoDB when shutting down as solo leader
-record_cold_boot_leader() {
+# Record last leader in DynamoDB whenever we become leader
+# This is checked on cold boot to determine which AZ should come up as primary
+record_last_leader() {
   local volume_id
   volume_id=$(get_data_volume_id)
 
@@ -215,22 +216,22 @@ record_cold_boot_leader() {
 
   local az_suffix="${AZ: -1}"  # Get last character (a, b, c, etc.)
 
-  echo "$LOG_PREFIX Recording cold boot leader: instance=$INSTANCE_ID, volume=$volume_id, az=$AZ"
+  echo "$LOG_PREFIX Recording last leader: instance=$INSTANCE_ID, volume=$volume_id, az=$AZ"
 
-  # Write cold_boot_leader record to DynamoDB
+  # Write last_leader record to DynamoDB (no TTL - persists until next leader)
   aws dynamodb put-item \
     --region "$REGION" \
     --table-name "$PATRONI_DYNAMODB_TABLE" \
     --item "{
       \"cluster_name\": {\"S\": \"$PATRONI_SCOPE\"},
-      \"key\": {\"S\": \"cold_boot_leader\"},
+      \"key\": {\"S\": \"last_leader\"},
       \"value\": {\"S\": \"{\\\"instance_id\\\": \\\"$INSTANCE_ID\\\", \\\"volume_id\\\": \\\"$volume_id\\\", \\\"az\\\": \\\"$AZ\\\", \\\"az_suffix\\\": \\\"$az_suffix\\\", \\\"timestamp\\\": \\\"$timestamp\\\"}\"}
     }" 2>/dev/null
 
   if [[ $? -eq 0 ]]; then
-    echo "$LOG_PREFIX Cold boot leader recorded successfully"
+    echo "$LOG_PREFIX Last leader recorded successfully"
   else
-    echo "$LOG_PREFIX WARNING: Failed to record cold boot leader"
+    echo "$LOG_PREFIX WARNING: Failed to record last leader"
   fi
 }
 
@@ -242,6 +243,9 @@ case "$ACTION" in
     register_system_table "$ROLE"
 
     if [[ "$ROLE" == "master" || "$ROLE" == "primary" ]]; then
+      # Record ourselves as last leader (used for cold boot AZ preference)
+      record_last_leader
+
       # Ensure replicator user exists (critical for replicas to connect)
       # This handles cold boot scenarios where leader has existing data
       ensure_replicator_user || echo "$LOG_PREFIX WARNING: Replicator user setup failed"
@@ -251,16 +255,6 @@ case "$ACTION" in
     ;;
   on_stop)
     echo "$LOG_PREFIX PostgreSQL stopped"
-
-    # If we were the leader, check if we're the solo leader
-    if [[ "$ROLE" == "master" || "$ROLE" == "primary" ]]; then
-      if check_solo_leader; then
-        echo "$LOG_PREFIX Shutting down as SOLO LEADER - recording cold boot leader"
-        record_cold_boot_leader
-      else
-        echo "$LOG_PREFIX Shutting down with other members running - no cold boot record needed"
-      fi
-    fi
 
     # Deregister from Cloud Map
     if [[ -n "$CLOUDMAP_SERVICE_ID" ]]; then
@@ -274,6 +268,12 @@ case "$ACTION" in
   on_role_change)
     echo "$LOG_PREFIX Role changed to $ROLE"
     register_system_table "$ROLE"
+
+    if [[ "$ROLE" == "master" || "$ROLE" == "primary" ]]; then
+      # Record ourselves as last leader (used for cold boot AZ preference)
+      record_last_leader
+    fi
+
     update_cloudmap "$ROLE"
     ;;
   *)

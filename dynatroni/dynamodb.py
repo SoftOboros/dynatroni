@@ -182,8 +182,17 @@ class DynamoDB(AbstractDCS):
         time.sleep(remaining)
         self._last_operation_time = time.time()
 
-    def _get_item(self, key_suffix: str) -> Optional[Dict[str, Any]]:
-        """Get an item from DynamoDB."""
+    def _get_item(self, key_suffix: str, check_ttl: bool = False) -> Optional[Dict[str, Any]]:
+        """Get an item from DynamoDB.
+
+        Args:
+            key_suffix: The key suffix to look up
+            check_ttl: If True, return None for expired items. Default False
+                       to let caller decide how to handle expired items.
+                       Important: For leader key, caller must see expired items
+                       to do unconditional takeover (conditional create fails
+                       because item still exists until DynamoDB cleanup).
+        """
         self._rate_limit()
 
         try:
@@ -192,7 +201,7 @@ class DynamoDB(AbstractDCS):
                 ConsistentRead=True
             )
             item = response.get('Item')
-            if item:
+            if item and check_ttl:
                 # Check TTL - DynamoDB may not have cleaned up yet
                 ttl = item.get('ttl', 0)
                 if ttl and ttl < time.time():
