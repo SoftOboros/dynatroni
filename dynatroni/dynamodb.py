@@ -247,14 +247,15 @@ class DynamoDB(AbstractDCS):
 
     def _update_item(self, key_suffix: str, updates: Dict[str, Any],
                      condition: Optional[str] = None,
-                     condition_values: Optional[Dict] = None) -> bool:
+                     condition_values: Optional[Dict] = None,
+                     condition_names: Optional[Dict] = None) -> bool:
         """Update an item in DynamoDB with optional conditional write."""
         self._rate_limit()
 
         try:
             update_expr_parts = []
             expr_values = condition_values.copy() if condition_values else {}
-            expr_names = {}
+            expr_names = condition_names.copy() if condition_names else {}
 
             for i, (k, v) in enumerate(updates.items()):
                 placeholder = f":val{i}"
@@ -287,7 +288,8 @@ class DynamoDB(AbstractDCS):
             raise DynamoDBError(f"Failed to update {key_suffix}: {e}")
 
     def _delete_item(self, key_suffix: str, condition: Optional[str] = None,
-                     condition_values: Optional[Dict] = None) -> bool:
+                     condition_values: Optional[Dict] = None,
+                     condition_names: Optional[Dict] = None) -> bool:
         """Delete an item from DynamoDB with optional conditional delete."""
         self._rate_limit()
 
@@ -297,6 +299,8 @@ class DynamoDB(AbstractDCS):
                 delete_kwargs['ConditionExpression'] = condition
                 if condition_values:
                     delete_kwargs['ExpressionAttributeValues'] = condition_values
+                if condition_names:
+                    delete_kwargs['ExpressionAttributeNames'] = condition_names
 
             self._table.delete_item(**delete_kwargs)
             return True
@@ -614,8 +618,9 @@ class DynamoDB(AbstractDCS):
                             'ttl': int(time.time()) + self.ttl,
                             'value': self._name
                         },
-                        condition='session = :sess',
-                        condition_values={':sess': self._session}
+                        condition='#sess = :sess',
+                        condition_values={':sess': self._session},
+                        condition_names={'#sess': 'session'}
                     )
                     if success:
                         # Renew the lock timestamp for TTL tracking
@@ -671,8 +676,9 @@ class DynamoDB(AbstractDCS):
         """Delete leader key - step down from leadership."""
         success = self._delete_item(
             'leader',
-            condition='session = :sess',
-            condition_values={':sess': self._session}
+            condition='#sess = :sess',
+            condition_values={':sess': self._session},
+            condition_names={'#sess': 'session'}
         )
         # Clear leadership state regardless of delete success
         # (if delete fails, we're likely not leader anyway)
