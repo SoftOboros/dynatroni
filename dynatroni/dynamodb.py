@@ -614,13 +614,15 @@ class DynamoDB(AbstractDCS):
                             'ttl': int(time.time()) + self.ttl,
                             'value': self._name
                         },
-                        condition='#sess = :sess',
+                        condition='session = :sess',
                         condition_values={':sess': self._session}
                     )
                     if success:
                         # Renew the lock timestamp for TTL tracking
                         self._leader_lock_acquired_at = time.time()
                         self._is_leader = True
+                    else:
+                        logger.warning(f"Leader lock renewal failed - session mismatch or item deleted")
                     return success
 
                 # If TTL expired, try to take over
@@ -669,7 +671,7 @@ class DynamoDB(AbstractDCS):
         """Delete leader key - step down from leadership."""
         success = self._delete_item(
             'leader',
-            condition='#sess = :sess',
+            condition='session = :sess',
             condition_values={':sess': self._session}
         )
         # Clear leadership state regardless of delete success
