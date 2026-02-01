@@ -53,10 +53,13 @@ The Dumbo AMI includes several safeguards for production stability:
 When the entire cluster is shut down and restarted, a **cold boot check** runs
 before Patroni starts to prevent a stale replica from becoming leader:
 
-1. Checks DynamoDB for a `cold_boot_leader` record (written when solo leader shuts down)
-2. If in the same AZ as the cold boot leader, proceeds immediately
-3. If in a different AZ, waits up to 5 minutes for the cold boot leader to start
-4. Falls back to **checkpoint timestamp election** if no record exists
+1. Checks DynamoDB for a `last_leader` record (written whenever a node becomes primary)
+2. If in the same AZ as the last leader, proceeds immediately as leader candidate
+3. If in a different AZ, waits for the last leader's AZ to start first
+4. Falls back to **checkpoint timestamp election** if no `last_leader` record exists
+
+**Timeout**: Default 5 minutes, configurable via `DUMBO_COLD_BOOT_TIMEOUT` env var
+or EC2 user data (in seconds). Must be less than `TimeoutStartSec` in patroni.service.
 
 **Checkpoint timestamp election**: Each node registers its PostgreSQL checkpoint
 timestamp; the node with the newest data becomes leader.
@@ -122,5 +125,6 @@ See [Configuration](configuration.md) for the failover_time derivation table.
 - **Clock drift**: TTL logic assumes roughly synchronized clocks.
 - **Stuck leader**: see [Break‑glass promotion](break-glass.md).
 - **Cold boot stall**: check `/var/log/syslog` for `[cold-boot-check]` messages;
-  use `DUMBO_FORCE_LEADER_PROMOTION=true` in user_data if needed.
+  increase `DUMBO_COLD_BOOT_TIMEOUT` (default 300s) in user_data if the last leader's
+  AZ is slow to start; use `DUMBO_FORCE_LEADER_PROMOTION=true` only as last resort.
 - **Testing mismatch**: etcd‑based local tests don't validate Dynatroni. Use DynamoDB Local or a dev table when possible.

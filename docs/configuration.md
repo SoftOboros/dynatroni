@@ -94,6 +94,34 @@ These are typically used by bootstrap scripts or templates:
 - `PATRONI_CONNECT_ADDRESS` – advertised address for REST API / Postgres
 - `POSTGRES_PASSWORD`, `REPLICATOR_PASSWORD` – if templating auth into Patroni config
 
+## Cold Boot Environment Variables
+
+These control the cold boot leader election behavior. Set via EC2 user data or
+environment variable (env var takes precedence):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DUMBO_COLD_BOOT_TIMEOUT` | 300 | Max seconds to wait for last leader's AZ |
+| `DUMBO_FORCE_LEADER_PROMOTION` | false | Skip cold boot check entirely (risk of data loss) |
+| `DUMBO_VOLUME_ID` | (auto-detect) | EBS volume ID for Docker mode volume matching |
+
+**Example EC2 user data:**
+```bash
+#!/bin/bash
+DUMBO_COLD_BOOT_TIMEOUT=600
+```
+
+**Setting via SSM (requires custom bootstrap logic):**
+```bash
+aws ssm put-parameter \
+  --name /softoboros/dumbo/cold_boot_timeout \
+  --value "600" \
+  --type String \
+  --overwrite
+```
+
+See [Multi-AZ & Cold Start](multi-az-and-cold-start.md) for full cold boot behavior.
+
 ## VPC Network Access
 
 The default `pg_hba.conf` allows connections from the VPC CIDR `10.20.0.0/16`:

@@ -16,11 +16,13 @@ set -euo pipefail
 
 LOG_PREFIX="[cold-boot-check]"
 SECRETS_FILE="/etc/default/dumbo-secrets"
-MAX_WAIT_SECONDS=300  # 5 minutes max wait
+
+# Configurable via env var or user data (default 5 minutes)
+MAX_WAIT_SECONDS=${DUMBO_COLD_BOOT_TIMEOUT:-300}
 WAIT_INTERVAL=10      # Check every 10 seconds
 WARN_INTERVAL=60      # Log warning every 60 seconds
 
-echo "$LOG_PREFIX Starting cold boot leader check"
+echo "$LOG_PREFIX Starting cold boot leader check (timeout=${MAX_WAIT_SECONDS}s)"
 
 # Load secrets for DynamoDB table name
 PATRONI_DYNAMODB_TABLE="softoboros-patroni"
@@ -97,21 +99,38 @@ if [[ "$MODE" == "docker" ]]; then
   echo "$LOG_PREFIX Docker mode: instance=$INSTANCE_ID, volume=${MY_VOLUME_ID:-<none>}"
 fi
 
-# Check for force promotion flag in user data (AWS) or env var (Docker)
-check_force_promotion() {
-  # Check env var first (works for both AWS and Docker)
-  if [[ "${DUMBO_FORCE_LEADER_PROMOTION:-}" == "true" ]]; then
-    return 0
+# Load settings from user data (AWS only)
+# Exports: DUMBO_COLD_BOOT_TIMEOUT, DUMBO_FORCE_LEADER_PROMOTION
+load_user_data_settings() {
+  if [[ "$MODE" != "aws" || -z "$TOKEN" ]]; then
+    return
   fi
 
-  # AWS: check user data
-  if [[ "$MODE" == "aws" && -n "$TOKEN" ]]; then
-    local user_data
-    user_data=$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/user-data 2>/dev/null || echo "")
+  local user_data
+  user_data=$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/user-data 2>/dev/null || echo "")
 
-    if echo "$user_data" | grep -qE "DUMBO_FORCE_LEADER_PROMOTION\s*=\s*true"; then
-      return 0  # Force promotion enabled
-    fi
+  # Extract DUMBO_COLD_BOOT_TIMEOUT if set in user data
+  local timeout_val
+  timeout_val=$(echo "$user_data" | grep -oE "DUMBO_COLD_BOOT_TIMEOUT\s*=\s*[0-9]+" | grep -oE "[0-9]+")
+  if [[ -n "$timeout_val" ]]; then
+    MAX_WAIT_SECONDS="$timeout_val"
+    echo "$LOG_PREFIX Using DUMBO_COLD_BOOT_TIMEOUT=$timeout_val from user data"
+  fi
+
+  # Extract DUMBO_FORCE_LEADER_PROMOTION if set in user data
+  if echo "$user_data" | grep -qE "DUMBO_FORCE_LEADER_PROMOTION\s*=\s*true"; then
+    export DUMBO_FORCE_LEADER_PROMOTION=true
+  fi
+}
+
+# Load user data settings early
+load_user_data_settings
+
+# Check for force promotion flag in user data (AWS) or env var (Docker)
+check_force_promotion() {
+  # Check env var (set by load_user_data_settings or externally)
+  if [[ "${DUMBO_FORCE_LEADER_PROMOTION:-}" == "true" ]]; then
+    return 0
   fi
 
   return 1  # Force promotion not enabled
