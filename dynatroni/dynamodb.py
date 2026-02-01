@@ -359,12 +359,18 @@ class DynamoDB(AbstractDCS):
 
             now = time.time()
             items = {}
+            expired_keys = []
             for item in response.get('Items', []):
                 # Filter out expired items
                 ttl = item.get('ttl', 0)
+                key = item.get('key', '')
                 if not ttl or ttl > now:
-                    key = item.get('key', '')
                     items[key] = item
+                else:
+                    expired_keys.append(f"{key}(ttl={ttl}, expired {int(now - ttl)}s ago)")
+
+            if expired_keys:
+                logger.debug(f"Filtered out expired items: {expired_keys}")
 
             return items
         except ClientError as e:
@@ -405,6 +411,9 @@ class DynamoDB(AbstractDCS):
         try:
             all_items = self._load_all_cluster_items()
 
+            # Debug logging for leader election issues
+            logger.debug(f"Loaded {len(all_items)} cluster items: {list(all_items.keys())}")
+
             # Extract individual components from the single query result
             leader_item = all_items.get('leader')
             config_item = all_items.get('config')
@@ -424,6 +433,8 @@ class DynamoDB(AbstractDCS):
                 self._last_leader_version = leader_item.get('version')
                 self._last_leader_session = leader_item.get('session')
                 leader_name = leader_item.get('value', '')
+                leader_ttl = leader_item.get('ttl', 0)
+                logger.debug(f"Leader item: name={leader_name}, session={self._last_leader_session[:8] if self._last_leader_session else 'None'}..., ttl={leader_ttl}, now={int(time.time())}")
                 if isinstance(leader_name, str):
                     try:
                         leader_data = json.loads(leader_name)
@@ -431,6 +442,8 @@ class DynamoDB(AbstractDCS):
                     except (json.JSONDecodeError, TypeError):
                         pass
                 # Find the member that is leader
+                member_names = [m.get('key', '').replace('members/', '') for m in member_items]
+                logger.debug(f"Looking for leader '{leader_name}' in members: {member_names}")
                 for m in member_items:
                     member_key = m.get('key', '')
                     member_name = member_key.replace('members/', '')
@@ -448,9 +461,12 @@ class DynamoDB(AbstractDCS):
                                     member_value
                                 )
                             )
-                        except (json.JSONDecodeError, TypeError):
-                            pass
+                            logger.debug(f"Created Leader object for {member_name}")
+                        except (json.JSONDecodeError, TypeError) as e:
+                            logger.warning(f"Failed to create Leader: {e}")
                         break
+                if not leader and leader_item:
+                    logger.warning(f"Leader key exists (name={leader_name}) but no matching member found in {member_names}")
 
             # Parse members
             members = []
@@ -581,6 +597,7 @@ class DynamoDB(AbstractDCS):
         """Update leader key - renew leadership (called by base class update_leader)."""
         # Update TTL on leader key
         # Note: We verify session ownership in attempt_to_acquire_leader before this is called
+        logger.info(f"_update_leader called: renewing TTL for {self._name} (ttl={self.ttl}s, session={self._session[:8]}...)")
         try:
             # Use put_item to renew the entire leader record
             success = self._put_item(
@@ -593,8 +610,9 @@ class DynamoDB(AbstractDCS):
                 # Renew the lock timestamp for TTL tracking
                 self._leader_lock_acquired_at = time.time()
                 self._is_leader = True
+                logger.info(f"_update_leader: successfully renewed TTL (expires at {int(time.time()) + self.ttl})")
             else:
-                logger.warning("update_leader: _put_item returned False")
+                logger.warning("_update_leader: _put_item returned False")
             return success
         except Exception as e:
             logger.warning(f"Failed to update leader: {e}")
