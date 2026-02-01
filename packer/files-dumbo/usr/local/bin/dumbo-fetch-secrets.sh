@@ -75,7 +75,7 @@ PATRONI_DYNAMODB_TABLE=$PATRONI_DYNAMODB_TABLE
 REPLICATOR_PASSWORD=$REPLICATOR_PASSWORD
 EOF
 
-chmod 600 "$OUTPUT_FILE"
-chown root:root "$OUTPUT_FILE"
-echo "[dumbo-secrets] Written to $OUTPUT_FILE ($(wc -l < "$OUTPUT_FILE") lines)"
+chmod 640 "$OUTPUT_FILE"
+chown root:postgres "$OUTPUT_FILE"
+echo "[dumbo-secrets] Written to $OUTPUT_FILE ($(wc -l < "$OUTPUT_FILE") lines, readable by postgres)"
 exit 0
