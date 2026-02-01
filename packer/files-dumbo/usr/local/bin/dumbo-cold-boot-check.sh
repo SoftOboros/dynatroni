@@ -206,6 +206,16 @@ clear_last_leader() {
     --key "{\"cluster_name\":{\"S\":\"$PATRONI_SCOPE\"},\"key\":{\"S\":\"last_leader\"}}" 2>/dev/null || true
 }
 
+# Clear stale leader key (call when starting fresh after full cluster shutdown)
+# This allows a new instance to claim leadership without waiting for TTL expiry
+clear_stale_leader() {
+  echo "$LOG_PREFIX Clearing stale leader key (full cluster restart)"
+  aws dynamodb delete-item \
+    --region "$REGION" \
+    --table-name "$PATRONI_DYNAMODB_TABLE" \
+    --key "{\"cluster_name\":{\"S\":\"$PATRONI_SCOPE\"},\"key\":{\"S\":\"leader\"}}" 2>/dev/null || true
+}
+
 # Clear cold boot candidates (cleanup after election)
 clear_cold_boot_candidates() {
   echo "$LOG_PREFIX Clearing cold boot candidate records"
@@ -399,6 +409,7 @@ main() {
     if [[ -n "$MY_AZ_SUFFIX" && "$MY_AZ_SUFFIX" == "$leader_az_suffix" ]]; then
       echo "$LOG_PREFIX We are in the last leader's AZ ($MY_AZ_SUFFIX) - proceeding as potential leader"
       clear_last_leader
+      clear_stale_leader  # Allow fresh leadership claim
       exit 0
     fi
     echo "$LOG_PREFIX We are in AZ $MY_AZ_SUFFIX, last leader was in AZ $leader_az_suffix"
@@ -407,6 +418,7 @@ main() {
     if [[ -n "$MY_VOLUME_ID" && -n "$leader_volume_id" && "$MY_VOLUME_ID" == "$leader_volume_id" ]]; then
       echo "$LOG_PREFIX We have the last leader's volume ($MY_VOLUME_ID) - proceeding as potential leader"
       clear_last_leader
+      clear_stale_leader  # Allow fresh leadership claim
       exit 0
     fi
     if [[ -n "$leader_volume_id" ]]; then
