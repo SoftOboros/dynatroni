@@ -630,72 +630,112 @@ class DynamoDB(AbstractDCS):
             return False
 
     def attempt_to_acquire_leader(self) -> bool:
-        """Attempt to acquire leadership."""
-        # Try to create leader key with our session
-        # Condition: key doesn't exist OR TTL has expired OR we already hold it
+        """Attempt to acquire leadership.
+
+        CRITICAL: This bypasses rate limiting because leader acquisition must happen
+        immediately to prevent cluster instability. All DynamoDB operations here
+        are direct calls without rate limiting.
+        """
+        logger.info(f"attempt_to_acquire_leader: {self._name} attempting to acquire (session={self._session[:8]}...)")
         try:
-            # First check if leader exists and is valid
-            leader_item = self._get_item('leader')
+            # Direct DynamoDB read - bypass rate limiting
+            response = self._table.get_item(
+                Key=self._key('leader'),
+                ConsistentRead=True
+            )
+            leader_item = response.get('Item')
 
             if leader_item:
                 existing_session = leader_item.get('session')
                 existing_ttl = leader_item.get('ttl', 0)
+                logger.info(f"attempt_to_acquire_leader: existing leader found, session={existing_session[:8] if existing_session else 'None'}..., ttl={existing_ttl}, now={int(time.time())}, ttl_remaining={existing_ttl - int(time.time())}s")
 
                 # If we already hold the lock, just renew
                 if existing_session == self._session:
-                    success = self._update_item(
-                        'leader',
-                        {
-                            'ttl': int(time.time()) + self.ttl,
-                            'value': self._name
-                        },
-                        condition='#sess = :sess',
-                        condition_values={':sess': self._session},
-                        condition_names={'#sess': 'session'}
-                    )
-                    if success:
-                        # Renew the lock timestamp for TTL tracking
+                    logger.info(f"attempt_to_acquire_leader: we hold the lock, renewing TTL")
+                    try:
+                        # Direct DynamoDB update - bypass rate limiting
+                        new_ttl = int(time.time()) + self.ttl
+                        self._table.update_item(
+                            Key=self._key('leader'),
+                            UpdateExpression='SET #ttl = :ttl, #val = :val, version = :ver',
+                            ConditionExpression='#sess = :sess',
+                            ExpressionAttributeNames={
+                                '#ttl': 'ttl',
+                                '#val': 'value',
+                                '#sess': 'session'
+                            },
+                            ExpressionAttributeValues={
+                                ':ttl': new_ttl,
+                                ':val': self._name,
+                                ':ver': int(time.time() * 1000000),
+                                ':sess': self._session
+                            }
+                        )
                         self._leader_lock_acquired_at = time.time()
                         self._is_leader = True
-                    else:
-                        logger.warning(f"Leader lock renewal failed - session mismatch or item deleted")
-                    return success
+                        logger.info(f"attempt_to_acquire_leader: renewed TTL, new_ttl={new_ttl}")
+                        return True
+                    except ClientError as e:
+                        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                            logger.warning(f"Leader lock renewal failed - session mismatch or item deleted")
+                            return False
+                        raise
 
                 # If TTL expired, try to take over
                 if existing_ttl < time.time():
-                    # TTL expired - use unconditional put to take over
-                    # This is safe because we've verified TTL expiration
-                    success = self._put_item(
-                        'leader',
-                        self._name,
-                        ttl_seconds=self.ttl,
-                        session=self._session
-                    )
-                    if success:
-                        self._leader_lock_acquired_at = time.time()
-                        self._is_leader = True
-                        logger.info(f"Acquired leader lock (expired TTL takeover)")
-                    return success
+                    logger.info(f"attempt_to_acquire_leader: TTL expired ({existing_ttl} < {int(time.time())}), taking over")
+                    # Direct DynamoDB put - bypass rate limiting
+                    new_ttl = int(time.time()) + self.ttl
+                    item = {
+                        'cluster_name': self._cluster_name,
+                        'key': 'leader',
+                        'value': self._name,
+                        'version': int(time.time() * 1000000),
+                        'ttl': new_ttl,
+                        'session': self._session
+                    }
+                    self._table.put_item(Item=item)
+                    self._leader_lock_acquired_at = time.time()
+                    self._is_leader = True
+                    logger.info(f"Acquired leader lock (expired TTL takeover), new_ttl={new_ttl}")
+                    return True
 
                 # Leader exists and is valid - can't acquire
+                logger.info(f"attempt_to_acquire_leader: leader exists and is valid, cannot acquire")
                 self._is_leader = False
                 return False
 
-            # No leader exists - try to create
-            success = self._put_item(
-                'leader',
-                self._name,
-                ttl_seconds=self.ttl,
-                session=self._session,
-                condition='attribute_not_exists(cluster_name)'
-            )
-            if success:
+            # No leader exists - try to create with condition
+            logger.info(f"attempt_to_acquire_leader: no leader exists, creating")
+            try:
+                # Direct DynamoDB put with condition - bypass rate limiting
+                new_ttl = int(time.time()) + self.ttl
+                item = {
+                    'cluster_name': self._cluster_name,
+                    'key': 'leader',
+                    'value': self._name,
+                    'version': int(time.time() * 1000000),
+                    'ttl': new_ttl,
+                    'session': self._session
+                }
+                self._table.put_item(
+                    Item=item,
+                    ConditionExpression='attribute_not_exists(cluster_name)'
+                )
                 self._leader_lock_acquired_at = time.time()
                 self._is_leader = True
-                logger.info(f"Acquired leader lock (new cluster)")
-            return success
+                logger.info(f"Acquired leader lock (new cluster), new_ttl={new_ttl}")
+                return True
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                    # Someone else created it first - retry will handle
+                    logger.info(f"attempt_to_acquire_leader: race condition, someone else created leader first")
+                    return False
+                raise
 
-        except DynamoDBError:
+        except ClientError as e:
+            logger.error(f"DynamoDB error in attempt_to_acquire_leader: {e}")
             self._is_leader = False
             return False
         except Exception as e:
@@ -704,13 +744,33 @@ class DynamoDB(AbstractDCS):
             return False
 
     def _delete_leader(self, leader: Optional[Leader]) -> bool:
-        """Delete leader key - step down from leadership."""
-        success = self._delete_item(
-            'leader',
-            condition='#sess = :sess',
-            condition_values={':sess': self._session},
-            condition_names={'#sess': 'session'}
-        )
+        """Delete leader key - step down from leadership.
+
+        CRITICAL: This bypasses rate limiting because stepping down must happen
+        immediately to allow another node to take over.
+        """
+        logger.info(f"_delete_leader: {self._name} stepping down (session={self._session[:8]}...)")
+        try:
+            # Direct DynamoDB delete - bypass rate limiting
+            self._table.delete_item(
+                Key=self._key('leader'),
+                ConditionExpression='#sess = :sess',
+                ExpressionAttributeNames={'#sess': 'session'},
+                ExpressionAttributeValues={':sess': self._session}
+            )
+            logger.info(f"_delete_leader: successfully deleted leader key")
+            success = True
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                logger.warning(f"_delete_leader: session mismatch, we're not the leader")
+                success = False
+            else:
+                logger.error(f"_delete_leader: DynamoDB error: {e}")
+                success = False
+        except Exception as e:
+            logger.error(f"_delete_leader: failed: {e}")
+            success = False
+
         # Clear leadership state regardless of delete success
         # (if delete fails, we're likely not leader anyway)
         self._is_leader = False
