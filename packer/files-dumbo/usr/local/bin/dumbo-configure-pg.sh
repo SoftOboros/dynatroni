@@ -75,7 +75,8 @@ local   all             all                                     scram-sha-256
 # Replication connections (Patroni HA - allow from VPC CIDR)
 local   replication     all                                     peer
 host    replication     replicator      10.20.0.0/16            scram-sha-256
-host    replication     all             127.0.0.1/32            scram-sha-256
+host    replication     replicator      127.0.0.1/32            scram-sha-256
+host    replication     replicator      ::1/128                 scram-sha-256
 
 # IPv4 host connections (VPC traffic - password auth)
 host    all             all             10.20.0.0/16            scram-sha-256
