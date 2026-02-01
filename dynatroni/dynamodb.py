@@ -162,7 +162,16 @@ class DynamoDB(AbstractDCS):
             time_since_lock = now - self._leader_lock_acquired_at
             time_until_expiry = self.ttl - time_since_lock
 
-            # If less than 2x operation interval until expiry, skip delay for emergency renewal
+            # TTL already expired - we've lost the lock
+            if time_until_expiry <= 0:
+                logger.error(f"Rate limit: TTL EXPIRED {-time_until_expiry:.1f}s ago! "
+                            f"Patroni loop exceeded TTL ({self.ttl}s). Lock lost.")
+                self._is_leader = False
+                self._leader_lock_acquired_at = 0.0
+                self._last_operation_time = now
+                return
+
+            # Approaching expiry - skip delay for emergency renewal
             if time_until_expiry < self._min_operation_interval * 2:
                 logger.warning(f"Rate limit: emergency renewal mode - {time_until_expiry:.1f}s until TTL expiry")
                 self._last_operation_time = now
