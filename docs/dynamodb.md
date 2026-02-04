@@ -104,20 +104,136 @@ Minimum permissions for the node IAM role or AWS credentials:
 }
 ```
 
-## Leader Election Semantics
+## Leader Election Deep Dive
 
-Dynatroni uses conditional writes throughout to ensure atomic leader election:
+Dynatroni implements a distributed lock (leader election) using DynamoDB's conditional writes as the atomic primitive. This section details the mechanism, guarantees, and boundaries.
 
-| Operation | Pattern | Condition |
-|-----------|---------|-----------|
-| **New leader (no existing)** | Conditional put | `attribute_not_exists(cluster_name)` |
-| **Leader renewal (same session)** | Conditional update | `session = :our_session` |
-| **TTL-expired takeover** | Conditional put | `ttl < :now` |
-| **Config/sync updates** | Conditional put | `version = :expected OR attribute_not_exists` |
+### The Mechanism: Conditional Writes as Semaphores
 
-**Atomic TTL-expired takeover:** When multiple nodes detect an expired leader TTL simultaneously, the conditional write `ttl < :now` ensures only one succeeds. Nodes that lose the race receive `ConditionalCheckFailedException` and will see the new leader on their next read.
+DynamoDB conditional writes are **atomic**: the condition check and the write happen as a single operation. If the condition fails, the write is rejected and the item is unchanged. This provides the foundation for distributed locking without requiring distributed transactions.
 
-This handles the case where DynamoDB TTL cleanup hasn't yet removed the expired item - we check `ttl < :now` rather than `attribute_not_exists`, allowing takeover while the item still physically exists.
+Each conditional write acts as a **compare-and-swap (CAS)** operation:
+1. Read current state (optional, for decision making)
+2. Attempt write with condition that encodes expected state
+3. If condition fails → another node won; retry or back off
+4. If condition succeeds → we hold the lock
+
+### Operations and Their Conditions
+
+| Operation | DynamoDB Call | Condition | Why This Condition |
+|-----------|---------------|-----------|-------------------|
+| **Acquire (new cluster)** | `PutItem` | `attribute_not_exists(cluster_name)` | Item must not exist; first writer wins |
+| **Renew (extend TTL)** | `UpdateItem` | `session = :mine` | Only the current holder can extend |
+| **Takeover (expired TTL)** | `PutItem` | `ttl < :now` | TTL must still be expired at write time |
+| **Release (step down)** | `DeleteItem` | `session = :mine` | Only the current holder can release |
+
+#### Acquire (New Cluster)
+
+```
+Node A                          DynamoDB                         Node B
+   |                               |                                |
+   |--PutItem(condition=not_exists)-->|                             |
+   |                               |<--PutItem(condition=not_exists)--|
+   |                               |                                |
+   |<--Success--------------------|                                |
+   |                               |--ConditionalCheckFailed------->|
+```
+
+Only one `PutItem` succeeds because `attribute_not_exists` fails once the item exists.
+
+#### Renew (Current Leader)
+
+```
+Leader                          DynamoDB                         Replica
+   |                               |                                |
+   |--UpdateItem(session=ABC,ttl+60)->|                             |
+   |<--Success--------------------|                                |
+   |                               |                                |
+   |                               |<--UpdateItem(session=XYZ,ttl+60)--|
+   |                               |--ConditionalCheckFailed------->|
+```
+
+Only the node whose session matches can update. Replicas attempting to renew fail.
+
+#### Takeover (Expired TTL)
+
+This is the critical path for failover. When a leader dies, its TTL expires and replicas race to take over.
+
+```
+Time    Node A (sees expired)       DynamoDB                    Node B (sees expired)
+  |            |                        |                              |
+  |  Read: ttl=100, now=105            |           Read: ttl=100, now=105
+  |            |                        |                              |
+  |            |--PutItem(ttl<now)----->|                              |
+  |            |                        |<-----PutItem(ttl<now)--------|
+  |            |                        |                              |
+  |            |<--Success (ttl=165)----|                              |
+  |            |                        |----ConditionalCheckFailed--->|
+```
+
+**Why `ttl < :now` works:** At write time, DynamoDB checks the *current* TTL value. Node A's write sets `ttl=165`. When Node B's write arrives (even microseconds later), the condition `ttl < now` is **false** because `165 > 105`. Node B's write fails atomically.
+
+#### Release (Step Down)
+
+```
+Leader                          DynamoDB
+   |                               |
+   |--DeleteItem(session=ABC)----->|
+   |<--Success--------------------|
+```
+
+Only the holder (matching session) can delete. This prevents a stale/partitioned node from accidentally releasing a lock held by a new leader.
+
+### Guarantees and Boundaries
+
+#### What Dynatroni Guarantees
+
+1. **Single leader at any instant**: Conditional writes ensure at most one node holds the lock
+2. **Leader lease bounded by TTL**: A leader must renew before TTL expires or lose the lock
+3. **Atomic transitions**: No intermediate state where two nodes both "hold" the lock
+4. **Availability over consistency**: A surviving minority can elect a leader (no quorum needed)
+
+#### What Dynatroni Does NOT Guarantee
+
+1. **Fencing tokens**: There's no monotonic token to fence stale leaders at the application layer. PostgreSQL handles this via timeline IDs and WAL positions.
+
+2. **Immediate leader detection**: A dead leader isn't detected until TTL expires. Detection time is bounded by `failover_time`.
+
+3. **Clock synchronization**: TTL comparisons assume clocks are reasonably synchronized. Use NTP. Clock skew > TTL can cause issues.
+
+4. **Network partition handling**: A partitioned leader that can still reach DynamoDB will keep renewing. Replicas won't take over until the leader loses DynamoDB connectivity.
+
+### Race Condition Analysis
+
+#### Race: Two nodes start simultaneously
+
+Both attempt `attribute_not_exists`. DynamoDB serializes the writes; exactly one succeeds.
+
+#### Race: Leader dies, two replicas race
+
+Both read expired TTL, both attempt `PutItem` with `ttl < :now`. The first write to reach DynamoDB sets a future TTL. The second write's condition fails because TTL is no longer in the past.
+
+#### Race: Slow leader renewal vs. eager replica
+
+Leader's renewal is delayed (GC pause, network). Replica sees expired TTL and attempts takeover.
+
+- If leader's `UpdateItem(session=mine)` arrives first: succeeds, TTL extended
+- If replica's `PutItem(ttl<now)` arrives first: succeeds, new session
+- If leader's update arrives after replica won: fails (`session` mismatch)
+
+In all cases, exactly one node is leader after the dust settles.
+
+### Timing Parameters
+
+All timing derives from `failover_time` (default 60s):
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| TTL | `failover_time` | Leader lock validity |
+| loop_wait | `failover_time / 3` | HA cycle interval (3 renewals per TTL) |
+| retry_timeout | `failover_time / 3` | DCS operation timeout |
+
+The 3:1 ratio ensures the leader has 3 chances to renew before TTL expires, tolerating transient failures.
 
 ## Environment / Isolation Tips
 

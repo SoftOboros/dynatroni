@@ -11,6 +11,7 @@ setup, configuration, deployment considerations, and operational runbooks.
 
 - [Install & quickstart](install.md)
 - [DynamoDB setup](dynamodb.md)
+  - [Leader election deep dive](dynamodb.md#leader-election-deep-dive) — how atomic operations ensure single-leader
 - [Configuration & environment](configuration.md)
 - [Multi‑AZ & cold start](multi-az-and-cold-start.md)
 - [Break‑glass promotion](break-glass.md)

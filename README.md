@@ -102,10 +102,29 @@ The EC2 instance role needs:
 
 ## How It Works
 
-1. **Leader Election**: DynamoDB conditional writes implement atomic leader locks
-2. **TTL-based Locking**: leader key expires if not renewed
-3. **Member Registration**: each node registers itself with a TTL
-4. **Cluster State**: config, sync state, and failover settings stored as JSON
+Dynatroni uses DynamoDB as a distributed lock service for PostgreSQL leader election.
+
+### Leader Election (Atomic Operations)
+
+All leader operations use **conditional writes** to ensure exactly one leader:
+
+| Operation | Condition | Guarantees |
+|-----------|-----------|------------|
+| Acquire (new cluster) | `attribute_not_exists` | Only one node creates the lock |
+| Renew (current leader) | `session = :mine` | Only the holder can extend |
+| Takeover (expired TTL) | `ttl < :now` | Only one node wins the race |
+| Release (step down) | `session = :mine` | Only the holder can release |
+
+The lock has a TTL (default 60s). If not renewed, it expires and another node can take over atomically.
+
+### Boundaries
+
+- **Single leader guarantee**: Conditional writes prevent split-brain
+- **Leader lease**: Bounded by TTL; leader must renew before expiry
+- **Failure detection**: `failover_time` bounds how long a dead leader blocks promotion
+- **No fencing tokens**: Relies on session IDs and TTL; applications should use PostgreSQL's own fencing
+
+See [docs/dynamodb.md](docs/dynamodb.md#leader-election-deep-dive) for implementation details.
 
 ## License
 
