@@ -214,7 +214,8 @@ class DynamoDB(AbstractDCS):
 
     def _put_item(self, key_suffix: str, value: Any, ttl_seconds: Optional[int] = None,
                   session: Optional[str] = None, condition: Optional[str] = None,
-                  condition_values: Optional[Dict] = None) -> bool:
+                  condition_values: Optional[Dict] = None,
+                  condition_names: Optional[Dict] = None) -> bool:
         """Put an item to DynamoDB with optional conditional write."""
         self._rate_limit()
 
@@ -237,6 +238,8 @@ class DynamoDB(AbstractDCS):
                 put_kwargs['ConditionExpression'] = condition
                 if condition_values:
                     put_kwargs['ExpressionAttributeValues'] = condition_values
+                if condition_names:
+                    put_kwargs['ExpressionAttributeNames'] = condition_names
 
             self._table.put_item(**put_kwargs)
             return True
@@ -658,12 +661,13 @@ class DynamoDB(AbstractDCS):
                         new_ttl = int(time.time()) + self.ttl
                         self._table.update_item(
                             Key=self._key('leader'),
-                            UpdateExpression='SET #ttl = :ttl, #val = :val, version = :ver',
+                            UpdateExpression='SET #ttl = :ttl, #val = :val, #ver = :ver',
                             ConditionExpression='#sess = :sess',
                             ExpressionAttributeNames={
                                 '#ttl': 'ttl',
                                 '#val': 'value',
-                                '#sess': 'session'
+                                '#sess': 'session',
+                                '#ver': 'version'
                             },
                             ExpressionAttributeValues={
                                 ':ttl': new_ttl,
@@ -810,7 +814,8 @@ class DynamoDB(AbstractDCS):
             return self._delete_item(
                 'sync',
                 condition='#ver = :ver',
-                condition_values={':ver': version}
+                condition_values={':ver': version},
+                condition_names={'#ver': 'version'}
             )
         return self._delete_item('sync')
 
@@ -821,7 +826,8 @@ class DynamoDB(AbstractDCS):
                 'failover',
                 value,
                 condition='#ver = :ver OR attribute_not_exists(cluster_name)',
-                condition_values={':ver': version}
+                condition_values={':ver': version},
+                condition_names={'#ver': 'version'}
             )
         return self._put_item('failover', value)
 
@@ -832,7 +838,8 @@ class DynamoDB(AbstractDCS):
                 'config',
                 value,
                 condition='#ver = :ver OR attribute_not_exists(cluster_name)',
-                condition_values={':ver': version}
+                condition_values={':ver': version},
+                condition_names={'#ver': 'version'}
             )
         return self._put_item('config', value)
 
@@ -843,7 +850,8 @@ class DynamoDB(AbstractDCS):
                 'sync',
                 value,
                 condition='#ver = :ver OR attribute_not_exists(cluster_name)',
-                condition_values={':ver': version}
+                condition_values={':ver': version},
+                condition_names={'#ver': 'version'}
             )
         return self._put_item('sync', value)
 

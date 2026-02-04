@@ -10,11 +10,16 @@ Dynatroni is configured inside your Patroni YAML under the `dynamodb:` key.
 
 ```yaml
 dynamodb:
-  region: us-east-1
-  table_name: patroni-dynamodb
-  failover_time: 60  # Single dial for cost vs responsiveness (default: 60)
+  region: us-east-1           # Optional: defaults to ca-central-1, or AWS SDK region resolution
+  table_name: patroni-dynamodb # Optional: defaults to softoboros-patroni
+  failover_time: 60           # Optional: defaults to 60 (single dial for cost vs responsiveness)
   # endpoint_url: http://localhost:8000  # optional for DynamoDB Local
 ```
+
+**Defaults and AWS SDK region resolution:**
+- `region`: Defaults to `ca-central-1`. If omitted, also checks `AWS_REGION` / `AWS_DEFAULT_REGION` environment variables, then EC2 instance metadata (IMDS).
+- `table_name`: Defaults to `softoboros-patroni`.
+- `failover_time`: Defaults to 60 seconds. Minimum allowed is 15 seconds.
 
 ## Failover Time: The Single Dial
 
@@ -135,7 +140,12 @@ Modify `/etc/postgresql/16/main/pg_hba.conf` for different VPC CIDRs.
 
 ## Runtime Considerations
 
-- **TTL behavior**: leader/member keys expire via TTL; ensure clocks are in sync.
+- **TTL behavior**: Different key types have different TTL multipliers:
+  - `leader`: TTL = `failover_time` (lock validity window)
+  - `members/*`, `status`: TTL = `failover_time * 2` (survive missed heartbeats)
+  - `config`, `sync`, `failover`, `history`, `initialize`, `failsafe`: No TTL (persistent)
+
+  Ensure clocks are in sync (NTP). DynamoDB TTL cleanup is eventually consistent; expired items may linger up to 48 hours but are filtered in application reads.
 - **Failover time tuning**: use `failover_time` as the single dial; individual
   `ttl`, `loop_wait`, and `retry_timeout` values are derived automatically.
 - **Endpoint URLs**: use `endpoint_url` only for local testing with DynamoDB Local.

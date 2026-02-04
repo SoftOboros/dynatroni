@@ -9,11 +9,11 @@ Patroni PostgreSQL HA.
 
 ## Features
 
-- **DynamoDB as arbiter**: leader election via DynamoDB conditional writes
+- **DynamoDB as arbiter**: leader election via DynamoDB atomic operations
 - **No quorum requirement**: a single surviving node can operate
 - **AWS-native**: IAM auth, managed service
 - **Cost-effective**: pay‑per‑request pricing for small clusters
-- **Highly available**: DynamoDB’s built‑in multi‑AZ replication
+- **Highly available**: DynamoDB's built‑in multi‑AZ replication
 
 ## Docs
 
