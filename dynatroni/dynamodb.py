@@ -686,10 +686,11 @@ class DynamoDB(AbstractDCS):
                             return False
                         raise
 
-                # If TTL expired, try to take over
+                # If TTL expired, try to take over with conditional write
+                # The condition ensures atomicity: only succeeds if TTL is still expired
+                # (prevents race where another node already took over)
                 if existing_ttl < time.time():
-                    logger.info(f"attempt_to_acquire_leader: TTL expired ({existing_ttl} < {int(time.time())}), taking over")
-                    # Direct DynamoDB put - bypass rate limiting
+                    logger.info(f"attempt_to_acquire_leader: TTL expired ({existing_ttl} < {int(time.time())}), attempting takeover")
                     new_ttl = int(time.time()) + self.ttl
                     item = {
                         'cluster_name': self._cluster_name,
@@ -699,11 +700,25 @@ class DynamoDB(AbstractDCS):
                         'ttl': new_ttl,
                         'session': self._session
                     }
-                    self._table.put_item(Item=item)
-                    self._leader_lock_acquired_at = time.time()
-                    self._is_leader = True
-                    logger.info(f"Acquired leader lock (expired TTL takeover), new_ttl={new_ttl}")
-                    return True
+                    try:
+                        # Conditional write: only succeed if TTL is still in the past
+                        # This is the semaphore - atomic check-and-set
+                        self._table.put_item(
+                            Item=item,
+                            ConditionExpression='#ttl < :now',
+                            ExpressionAttributeNames={'#ttl': 'ttl'},
+                            ExpressionAttributeValues={':now': int(time.time())}
+                        )
+                        self._leader_lock_acquired_at = time.time()
+                        self._is_leader = True
+                        logger.info(f"Acquired leader lock (expired TTL takeover), new_ttl={new_ttl}")
+                        return True
+                    except ClientError as e:
+                        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                            # Another node took over first - that's fine, retry will see new leader
+                            logger.info(f"attempt_to_acquire_leader: lost race for expired TTL takeover")
+                            return False
+                        raise
 
                 # Leader exists and is valid - can't acquire
                 logger.info(f"attempt_to_acquire_leader: leader exists and is valid, cannot acquire")

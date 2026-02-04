@@ -106,21 +106,18 @@ Minimum permissions for the node IAM role or AWS credentials:
 
 ## Leader Election Semantics
 
-Dynatroni uses a combination of conditional writes and read-check-write patterns:
+Dynatroni uses conditional writes throughout to ensure atomic leader election:
 
 | Operation | Pattern | Condition |
 |-----------|---------|-----------|
 | **New leader (no existing)** | Conditional put | `attribute_not_exists(cluster_name)` |
 | **Leader renewal (same session)** | Conditional update | `session = :our_session` |
-| **TTL-expired takeover** | Read-check-write | None (unconditional after TTL check) |
+| **TTL-expired takeover** | Conditional put | `ttl < :now` |
 | **Config/sync updates** | Conditional put | `version = :expected OR attribute_not_exists` |
 
-**Race window on TTL expiry:** When multiple nodes detect an expired leader TTL simultaneously, they may both attempt unconditional writes. This is safe because:
-1. DynamoDB serializes writes atomically
-2. The "losing" node will see the other's session on next read
-3. Patroni's HA loop will converge to a single leader
+**Atomic TTL-expired takeover:** When multiple nodes detect an expired leader TTL simultaneously, the conditional write `ttl < :now` ensures only one succeeds. Nodes that lose the race receive `ConditionalCheckFailedException` and will see the new leader on their next read.
 
-This read-check-write pattern (instead of pure conditional writes) is intentional to handle the case where DynamoDB TTL cleanup hasn't yet removed the expired item. A conditional `attribute_not_exists` would fail even though the leader is logically gone.
+This handles the case where DynamoDB TTL cleanup hasn't yet removed the expired item - we check `ttl < :now` rather than `attribute_not_exists`, allowing takeover while the item still physically exists.
 
 ## Environment / Isolation Tips
 
