@@ -20,9 +20,6 @@ ExecStartPre=+/usr/local/bin/dumbo-patroni-configure.sh
 # Start Patroni (it manages PostgreSQL lifecycle)
 ExecStart=/usr/local/bin/patroni /etc/patroni/patroni.yml
 
-# Allow time for cold boot check to wait for leader AZ (default 90s is too short)
-TimeoutStartSec=360
-
 # Graceful shutdown
 ExecStop=/usr/bin/kill -INT $MAINPID
 TimeoutStopSec=120

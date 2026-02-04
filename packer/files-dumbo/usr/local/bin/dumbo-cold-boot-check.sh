@@ -5,24 +5,22 @@ set -euo pipefail
 # Runs before Patroni starts to ensure proper leader election after full cluster shutdown
 #
 # Behavior:
-#   1. Check DynamoDB for last_leader record (written whenever a node becomes leader)
+#   1. Check DynamoDB for cold_boot_leader record (written when solo leader shuts down)
 #   2. AWS (IMDS available): Use AZ-based preference - same AZ proceeds immediately
 #   3. Docker (no IMDS): Use volume_id matching - same volume proceeds immediately
-#   4. If different AZ/volume, wait for the last leader's AZ to come up first
+#   4. If different AZ/volume, wait for the cold boot leader to come up first
 #   5. If DUMBO_FORCE_LEADER_PROMOTION=true, skip waiting
-#   6. If no last_leader record exists, use checkpoint timestamp election
+#   6. If no cold_boot_leader record exists, use checkpoint timestamp election
 #
 # This prevents a replica with stale data from becoming leader during cold start
 
 LOG_PREFIX="[cold-boot-check]"
 SECRETS_FILE="/etc/default/dumbo-secrets"
-
-# Configurable via env var or user data (default 5 minutes)
-MAX_WAIT_SECONDS=${DUMBO_COLD_BOOT_TIMEOUT:-300}
+MAX_WAIT_SECONDS=300  # 5 minutes max wait
 WAIT_INTERVAL=10      # Check every 10 seconds
 WARN_INTERVAL=60      # Log warning every 60 seconds
 
-echo "$LOG_PREFIX Starting cold boot leader check (timeout=${MAX_WAIT_SECONDS}s)"
+echo "$LOG_PREFIX Starting cold boot leader check"
 
 # Load secrets for DynamoDB table name
 PATRONI_DYNAMODB_TABLE="softoboros-patroni"
@@ -99,79 +97,45 @@ if [[ "$MODE" == "docker" ]]; then
   echo "$LOG_PREFIX Docker mode: instance=$INSTANCE_ID, volume=${MY_VOLUME_ID:-<none>}"
 fi
 
-# Load settings from user data (AWS only)
-# Exports: DUMBO_COLD_BOOT_TIMEOUT, DUMBO_FORCE_LEADER_PROMOTION
-load_user_data_settings() {
-  if [[ "$MODE" != "aws" || -z "$TOKEN" ]]; then
-    return
-  fi
-
-  local user_data
-  user_data=$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/user-data 2>/dev/null || echo "")
-
-  # Extract DUMBO_COLD_BOOT_TIMEOUT if set in user data
-  local timeout_val
-  timeout_val=$(echo "$user_data" | grep -oE "DUMBO_COLD_BOOT_TIMEOUT\s*=\s*[0-9]+" | grep -oE "[0-9]+" || true)
-  if [[ -n "$timeout_val" ]]; then
-    MAX_WAIT_SECONDS="$timeout_val"
-    echo "$LOG_PREFIX Using DUMBO_COLD_BOOT_TIMEOUT=$timeout_val from user data"
-  fi
-
-  # Extract DUMBO_FORCE_LEADER_PROMOTION if set in user data (grep -q returns 1 if no match)
-  if echo "$user_data" | grep -qE "DUMBO_FORCE_LEADER_PROMOTION\s*=\s*true" 2>/dev/null; then
-    export DUMBO_FORCE_LEADER_PROMOTION=true
-  fi
-}
-
-# Load user data settings early
-load_user_data_settings
-
 # Check for force promotion flag in user data (AWS) or env var (Docker)
 check_force_promotion() {
-  # Check env var (set by load_user_data_settings or externally)
+  # Check env var first (works for both AWS and Docker)
   if [[ "${DUMBO_FORCE_LEADER_PROMOTION:-}" == "true" ]]; then
     return 0
+  fi
+
+  # AWS: check user data
+  if [[ "$MODE" == "aws" && -n "$TOKEN" ]]; then
+    local user_data
+    user_data=$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/user-data 2>/dev/null || echo "")
+
+    if echo "$user_data" | grep -qE "DUMBO_FORCE_LEADER_PROMOTION\s*=\s*true"; then
+      return 0  # Force promotion enabled
+    fi
   fi
 
   return 1  # Force promotion not enabled
 }
 
-# Get last_leader record from DynamoDB
-get_last_leader() {
+# Get cold boot leader record from DynamoDB
+get_cold_boot_leader() {
   aws dynamodb get-item \
     --region "$REGION" \
     --table-name "$PATRONI_DYNAMODB_TABLE" \
-    --key "{\"cluster_name\":{\"S\":\"$PATRONI_SCOPE\"},\"key\":{\"S\":\"last_leader\"}}" \
+    --key "{\"cluster_name\":{\"S\":\"$PATRONI_SCOPE\"},\"key\":{\"S\":\"cold_boot_leader\"}}" \
     --output json 2>/dev/null | jq -r '.Item.value.S // empty'
 }
 
-# Check if leader AZ is active (has claimed leadership or has an active member)
+# Check if the cold boot leader's Patroni API is responding
 check_leader_alive() {
   local leader_info=$1
   local leader_az_suffix
   leader_az_suffix=$(echo "$leader_info" | jq -r '.az_suffix // empty')
 
-  local current_time
-  current_time=$(date +%s)
+  # Check if any member from the leader's AZ is now active in the cluster
+  # We query our local Patroni (if running) or check DynamoDB members
 
-  # First, check if there's a leader key with valid TTL (someone claimed leadership)
-  local leader_key
-  leader_key=$(aws dynamodb get-item \
-    --region "$REGION" \
-    --table-name "$PATRONI_DYNAMODB_TABLE" \
-    --key "{\"cluster_name\":{\"S\":\"$PATRONI_SCOPE\"},\"key\":{\"S\":\"leader\"}}" \
-    --output json 2>/dev/null || echo "{}")
-
-  local leader_ttl
-  leader_ttl=$(echo "$leader_key" | jq -r '.Item.ttl.N // "0"' 2>/dev/null || echo "0")
-
-  if [[ "$leader_ttl" -gt "$current_time" ]]; then
-    echo "$LOG_PREFIX Leader key found with valid TTL - cluster has a leader"
-    return 0
-  fi
-
-  # No leader yet - check if any member in the last leader's AZ is alive
-  # (they might be starting up and about to claim leadership)
+  # First, check DynamoDB for members in the leader's AZ
   local members_json
   members_json=$(aws dynamodb query \
     --region "$REGION" \
@@ -182,38 +146,27 @@ check_leader_alive() {
     --output json 2>/dev/null || echo "{}")
 
   # Check if any member has a recent TTL (meaning it's alive)
-  # Member records contain conn_url with the IP, we need to check if it's in leader's AZ
-  # For now, just check if ANY member is alive - if so, let them sort out leadership
-  local alive_count
-  alive_count=$(echo "$members_json" | jq -r --argjson now "$current_time" '
-    [.Items[] | select((.ttl.N | tonumber) > $now)] | length
+  local current_time
+  current_time=$(date +%s)
+
+  local alive_in_leader_az
+  alive_in_leader_az=$(echo "$members_json" | jq -r --arg az "$leader_az_suffix" --argjson now "$current_time" '
+    [.Items[] |
+     select(.value.S | fromjson | .role == "master" or .role == "primary" or .role == "leader") |
+     select((.ttl.N | tonumber) > $now)
+    ] | length
   ' 2>/dev/null || echo "0")
 
-  if [[ "$alive_count" -gt 0 ]]; then
-    echo "$LOG_PREFIX Found $alive_count alive member(s) in cluster - proceeding"
-    return 0
-  fi
-
-  return 1
+  [[ "$alive_in_leader_az" -gt 0 ]]
 }
 
-# Clear last_leader record (call after successful cluster formation)
-clear_last_leader() {
-  echo "$LOG_PREFIX Clearing last_leader record"
+# Clear cold boot leader record (call after successful cluster formation)
+clear_cold_boot_leader() {
+  echo "$LOG_PREFIX Clearing cold boot leader record"
   aws dynamodb delete-item \
     --region "$REGION" \
     --table-name "$PATRONI_DYNAMODB_TABLE" \
-    --key "{\"cluster_name\":{\"S\":\"$PATRONI_SCOPE\"},\"key\":{\"S\":\"last_leader\"}}" 2>/dev/null || true
-}
-
-# Clear stale leader key (call when starting fresh after full cluster shutdown)
-# This allows a new instance to claim leadership without waiting for TTL expiry
-clear_stale_leader() {
-  echo "$LOG_PREFIX Clearing stale leader key (full cluster restart)"
-  aws dynamodb delete-item \
-    --region "$REGION" \
-    --table-name "$PATRONI_DYNAMODB_TABLE" \
-    --key "{\"cluster_name\":{\"S\":\"$PATRONI_SCOPE\"},\"key\":{\"S\":\"leader\"}}" 2>/dev/null || true
+    --key "{\"cluster_name\":{\"S\":\"$PATRONI_SCOPE\"},\"key\":{\"S\":\"cold_boot_leader\"}}" 2>/dev/null || true
 }
 
 # Clear cold boot candidates (cleanup after election)
@@ -291,7 +244,7 @@ get_newest_candidate() {
   ' 2>/dev/null || echo ""
 }
 
-# Fallback election when no last_leader record exists
+# Fallback election when no cold boot leader record exists
 # Uses PostgreSQL checkpoint timestamp to elect the node with newest data
 fallback_checkpoint_election() {
   local my_checkpoint_ts
@@ -377,29 +330,29 @@ main() {
   if check_force_promotion; then
     echo "$LOG_PREFIX DUMBO_FORCE_LEADER_PROMOTION=true detected - skipping cold boot check"
     echo "$LOG_PREFIX WARNING: Forcing leader promotion may cause data loss if this node has stale data"
-    clear_last_leader
+    clear_cold_boot_leader
     exit 0
   fi
 
-  # Get last_leader record
-  local last_leader
-  last_leader=$(get_last_leader)
+  # Get cold boot leader record
+  local cold_boot_leader
+  cold_boot_leader=$(get_cold_boot_leader)
 
-  if [[ -z "$last_leader" ]]; then
-    echo "$LOG_PREFIX No last_leader record found"
+  if [[ -z "$cold_boot_leader" ]]; then
+    echo "$LOG_PREFIX No cold boot leader record found"
     echo "$LOG_PREFIX Using fallback: checkpoint timestamp election"
     fallback_checkpoint_election
     exit 0
   fi
 
-  echo "$LOG_PREFIX Found last_leader record: $last_leader"
+  echo "$LOG_PREFIX Found cold boot leader record: $cold_boot_leader"
 
   local leader_az_suffix
   local leader_timestamp
   local leader_volume_id
-  leader_az_suffix=$(echo "$last_leader" | jq -r '.az_suffix // empty')
-  leader_timestamp=$(echo "$last_leader" | jq -r '.timestamp // empty')
-  leader_volume_id=$(echo "$last_leader" | jq -r '.volume_id // empty')
+  leader_az_suffix=$(echo "$cold_boot_leader" | jq -r '.az_suffix // empty')
+  leader_timestamp=$(echo "$cold_boot_leader" | jq -r '.timestamp // empty')
+  leader_volume_id=$(echo "$cold_boot_leader" | jq -r '.volume_id // empty')
 
   echo "$LOG_PREFIX Cold boot leader: az_suffix=$leader_az_suffix, volume=$leader_volume_id (recorded at: $leader_timestamp)"
 
@@ -407,37 +360,35 @@ main() {
   if [[ "$MODE" == "aws" ]]; then
     # AWS mode: use AZ matching
     if [[ -n "$MY_AZ_SUFFIX" && "$MY_AZ_SUFFIX" == "$leader_az_suffix" ]]; then
-      echo "$LOG_PREFIX We are in the last leader's AZ ($MY_AZ_SUFFIX) - proceeding as potential leader"
-      clear_last_leader
-      clear_stale_leader  # Allow fresh leadership claim
+      echo "$LOG_PREFIX We are in the cold boot leader's AZ ($MY_AZ_SUFFIX) - proceeding as potential leader"
+      clear_cold_boot_leader
       exit 0
     fi
-    echo "$LOG_PREFIX We are in AZ $MY_AZ_SUFFIX, last leader was in AZ $leader_az_suffix"
+    echo "$LOG_PREFIX We are in AZ $MY_AZ_SUFFIX, cold boot leader was in AZ $leader_az_suffix"
   else
     # Docker mode: use volume matching
     if [[ -n "$MY_VOLUME_ID" && -n "$leader_volume_id" && "$MY_VOLUME_ID" == "$leader_volume_id" ]]; then
-      echo "$LOG_PREFIX We have the last leader's volume ($MY_VOLUME_ID) - proceeding as potential leader"
-      clear_last_leader
-      clear_stale_leader  # Allow fresh leadership claim
+      echo "$LOG_PREFIX We have the cold boot leader's volume ($MY_VOLUME_ID) - proceeding as potential leader"
+      clear_cold_boot_leader
       exit 0
     fi
     if [[ -n "$leader_volume_id" ]]; then
       echo "$LOG_PREFIX Our volume ($MY_VOLUME_ID) != leader volume ($leader_volume_id)"
     else
-      echo "$LOG_PREFIX No volume_id in last_leader record - using checkpoint fallback"
+      echo "$LOG_PREFIX No volume_id in cold boot leader record - using checkpoint fallback"
       fallback_checkpoint_election
       exit 0
     fi
   fi
 
-  echo "$LOG_PREFIX Waiting for last leader's AZ to start first (prevents stale replica from becoming leader)"
+  echo "$LOG_PREFIX Waiting for cold boot leader to start first (prevents stale replica from becoming leader)"
 
   local waited=0
   local last_warn=0
 
   while [[ $waited -lt $MAX_WAIT_SECONDS ]]; do
     # Check if leader is alive
-    if check_leader_alive "$last_leader"; then
+    if check_leader_alive "$cold_boot_leader"; then
       echo "$LOG_PREFIX Cold boot leader is now active - proceeding to join cluster"
       exit 0
     fi
@@ -454,7 +405,7 @@ main() {
   done
 
   # Timeout reached
-  echo "$LOG_PREFIX WARNING: Timeout waiting for last leader's AZ (${MAX_WAIT_SECONDS}s)"
+  echo "$LOG_PREFIX WARNING: Timeout waiting for cold boot leader (${MAX_WAIT_SECONDS}s)"
   echo "$LOG_PREFIX Proceeding anyway - cluster may need manual intervention"
   echo "$LOG_PREFIX If this node has stale data, run: patronictl reinit $PATRONI_SCOPE $INSTANCE_ID"
 
