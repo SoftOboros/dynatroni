@@ -46,7 +46,7 @@ For the Dumbo AMI, `failover_time` is read from SSM at boot:
 ```bash
 # Set failover_time for all cluster nodes
 aws ssm put-parameter \
-  --name /softoboros/patroni/failover_time \
+  --name /softoboros/dumbo/patroni/failover_time \
   --value "60" \
   --type String \
   --overwrite
@@ -79,13 +79,58 @@ postgresql:
 
 ## SSM Parameters (Dumbo AMI)
 
-The Dumbo AMI reads configuration from AWS Systems Manager Parameter Store:
+The Dumbo AMI reads configuration from AWS Systems Manager Parameter Store.
+All parameters use the `/softoboros/dumbo/` prefix.
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `/softoboros/patroni/dynamodb_table` | DynamoDB table name | `softoboros-patroni` |
-| `/softoboros/patroni/failover_time` | Failover time in seconds | `60` |
-| `/softoboros/postgres/replicator_password` | Replication user password | (required) |
+### Required Parameters
+
+These must exist before launching the AMI:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `/softoboros/dumbo/db/password` | SecureString | PostgreSQL superuser password |
+| `/softoboros/dumbo/db/replicator_password` | SecureString | Streaming replication user password |
+
+### Optional Parameters
+
+These have sensible defaults and can be omitted:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `/softoboros/dumbo/db/user` | String | `postgres` | PostgreSQL superuser name |
+| `/softoboros/dumbo/db/db` | String | `softoboros` | Default database name |
+| `/softoboros/dumbo/pg/shared_buffers` | String | `256MB` | PostgreSQL shared_buffers |
+| `/softoboros/dumbo/pg/effective_cache_size` | String | `768MB` | PostgreSQL effective_cache_size |
+| `/softoboros/dumbo/pg/work_mem` | String | `8MB` | PostgreSQL work_mem |
+| `/softoboros/dumbo/pg/maintenance_work_mem` | String | `64MB` | PostgreSQL maintenance_work_mem |
+| `/softoboros/dumbo/patroni/dynamodb_table` | String | `softoboros-patroni` | DynamoDB table for leader election |
+| `/softoboros/dumbo/patroni/failover_time` | String | `60` | Failover time in seconds (see below) |
+| `/softoboros/dumbo/cloudmap_service_id` | String | (none) | Cloud Map service ID for DNS registration |
+
+### Creating Required Parameters
+
+```bash
+# Create the required secrets
+aws ssm put-parameter \
+  --name /softoboros/dumbo/db/password \
+  --type SecureString \
+  --value "your-secure-password"
+
+aws ssm put-parameter \
+  --name /softoboros/dumbo/db/replicator_password \
+  --type SecureString \
+  --value "your-replicator-password"
+```
+
+### PostgreSQL Memory Tuning
+
+The default memory settings are sized for t4g.small (2GB RAM). Adjust for your instance size:
+
+| Instance | shared_buffers | effective_cache_size | work_mem | maintenance_work_mem |
+|----------|----------------|----------------------|----------|----------------------|
+| t4g.small (2GB) | 256MB | 768MB | 8MB | 64MB |
+| t4g.medium (4GB) | 512MB | 1536MB | 16MB | 128MB |
+| t4g.large (8GB) | 1GB | 3GB | 32MB | 256MB |
 
 ## Common Environment Variables
 
@@ -116,7 +161,7 @@ environment variable (env var takes precedence):
 DUMBO_COLD_BOOT_TIMEOUT=600
 ```
 
-**Setting via SSM (requires custom bootstrap logic):**
+**Setting via SSM:**
 ```bash
 aws ssm put-parameter \
   --name /softoboros/dumbo/cold_boot_timeout \
