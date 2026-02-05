@@ -3,6 +3,12 @@ set -euo pipefail
 
 # Fetch PostgreSQL secrets and configuration from SSM Parameter Store
 # Output: /etc/default/dumbo-secrets
+#
+# SSM Parameter Structure (consolidated):
+#   /softoboros/dumbo/db/*         - Database credentials and connection info
+#   /softoboros/dumbo/pg/*         - PostgreSQL memory tuning
+#   /softoboros/dumbo/patroni/*    - Patroni HA configuration
+#   /softoboros/dumbo/cloudmap_service_id - DNS registration
 
 OUTPUT_FILE=${1:-/etc/default/dumbo-secrets}
 
@@ -16,31 +22,67 @@ fi
 
 echo "[dumbo-secrets] Fetching from SSM Parameter Store in $REGION..."
 
-# Fetch PostgreSQL authentication parameters
-POSTGRES_USER=$(aws ssm get-parameter --region "$REGION" --name /softoboros/postgres/user --query 'Parameter.Value' --output text 2>/dev/null || echo "postgres")
-POSTGRES_DB=$(aws ssm get-parameter --region "$REGION" --name /softoboros/postgres/db --query 'Parameter.Value' --output text 2>/dev/null || echo "softoboros")
-POSTGRES_PASSWORD=$(aws ssm get-parameter --region "$REGION" --name /softoboros/postgres/password --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+# Helper to fetch with new path first, then fall back to old path (for migration)
+fetch_ssm_param_migrate() {
+  local new_path=$1
+  local old_path=$2
+  local default=$3
+  local decrypt=${4:-false}
+  local value
+
+  if [[ "$decrypt" == "true" ]]; then
+    value=$(aws ssm get-parameter --region "$REGION" --name "$new_path" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+  else
+    value=$(aws ssm get-parameter --region "$REGION" --name "$new_path" --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+  fi
+
+  if [[ -n "$value" ]]; then
+    echo "$value"
+    return 0
+  fi
+
+  # Fallback to old path
+  if [[ "$decrypt" == "true" ]]; then
+    value=$(aws ssm get-parameter --region "$REGION" --name "$old_path" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+  else
+    value=$(aws ssm get-parameter --region "$REGION" --name "$old_path" --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+  fi
+
+  if [[ -n "$value" ]]; then
+    echo "[dumbo-secrets] DEPRECATION: Using legacy path $old_path (migrate to $new_path)" >&2
+    echo "$value"
+    return 0
+  fi
+
+  echo "$default"
+}
+
+# Fetch PostgreSQL authentication parameters (new: /softoboros/dumbo/db/*, old: /softoboros/postgres/*)
+POSTGRES_USER=$(fetch_ssm_param_migrate /softoboros/dumbo/db/user /softoboros/postgres/user "postgres")
+POSTGRES_DB=$(fetch_ssm_param_migrate /softoboros/dumbo/db/db /softoboros/postgres/db "softoboros")
+POSTGRES_PASSWORD=$(fetch_ssm_param_migrate /softoboros/dumbo/db/password /softoboros/postgres/password "" true)
 
 # Validate we got a password (required for security)
 if [[ -z "$POSTGRES_PASSWORD" ]]; then
   echo "[dumbo-secrets] WARNING: No password found in SSM; PostgreSQL will use peer auth only"
 fi
 
-# Fetch PostgreSQL memory tuning parameters (with defaults for t4g.small / 2GB)
-PG_SHARED_BUFFERS=$(aws ssm get-parameter --region "$REGION" --name /softoboros/dumbo/shared_buffers --query 'Parameter.Value' --output text 2>/dev/null || echo "256MB")
-PG_EFFECTIVE_CACHE_SIZE=$(aws ssm get-parameter --region "$REGION" --name /softoboros/dumbo/effective_cache_size --query 'Parameter.Value' --output text 2>/dev/null || echo "768MB")
-PG_WORK_MEM=$(aws ssm get-parameter --region "$REGION" --name /softoboros/dumbo/work_mem --query 'Parameter.Value' --output text 2>/dev/null || echo "8MB")
-PG_MAINTENANCE_WORK_MEM=$(aws ssm get-parameter --region "$REGION" --name /softoboros/dumbo/maintenance_work_mem --query 'Parameter.Value' --output text 2>/dev/null || echo "64MB")
+# Fetch PostgreSQL memory tuning parameters (new: /softoboros/dumbo/pg/*, old: /softoboros/dumbo/*)
+# Defaults for t4g.small / 2GB
+PG_SHARED_BUFFERS=$(fetch_ssm_param_migrate /softoboros/dumbo/pg/shared_buffers /softoboros/dumbo/shared_buffers "256MB")
+PG_EFFECTIVE_CACHE_SIZE=$(fetch_ssm_param_migrate /softoboros/dumbo/pg/effective_cache_size /softoboros/dumbo/effective_cache_size "768MB")
+PG_WORK_MEM=$(fetch_ssm_param_migrate /softoboros/dumbo/pg/work_mem /softoboros/dumbo/work_mem "8MB")
+PG_MAINTENANCE_WORK_MEM=$(fetch_ssm_param_migrate /softoboros/dumbo/pg/maintenance_work_mem /softoboros/dumbo/maintenance_work_mem "64MB")
 
 echo "[dumbo-secrets] PostgreSQL memory settings: shared_buffers=$PG_SHARED_BUFFERS, effective_cache_size=$PG_EFFECTIVE_CACHE_SIZE"
 
 # Fetch Cloud Map service ID for DNS registration (optional)
 CLOUDMAP_SERVICE_ID=$(aws ssm get-parameter --region "$REGION" --name /softoboros/dumbo/cloudmap_service_id --query 'Parameter.Value' --output text 2>/dev/null || echo "")
 
-# Fetch Patroni/HA parameters
+# Fetch Patroni/HA parameters (new: /softoboros/dumbo/patroni/*, old: /softoboros/patroni/*)
 echo "[dumbo-secrets] Fetching Patroni HA parameters..."
-PATRONI_DYNAMODB_TABLE=$(aws ssm get-parameter --region "$REGION" --name /softoboros/patroni/dynamodb_table --query 'Parameter.Value' --output text 2>/dev/null || echo "softoboros-patroni")
-REPLICATOR_PASSWORD=$(aws ssm get-parameter --region "$REGION" --name /softoboros/postgres/replicator_password --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+PATRONI_DYNAMODB_TABLE=$(fetch_ssm_param_migrate /softoboros/dumbo/patroni/dynamodb_table /softoboros/patroni/dynamodb_table "softoboros-patroni")
+REPLICATOR_PASSWORD=$(fetch_ssm_param_migrate /softoboros/dumbo/db/replicator_password /softoboros/postgres/replicator_password "" true)
 
 # Write to env file (restrict permissions)
 cat > "$OUTPUT_FILE" <<EOF
