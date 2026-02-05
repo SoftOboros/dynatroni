@@ -234,6 +234,8 @@ build {
       "sudo install -m 0755 -o root -g root $(find /tmp/pack_files -name 'dumbo-patroni-configure.sh' | head -1) /usr/local/bin/dumbo-patroni-configure.sh",
       "sudo install -m 0755 -o root -g root $(find /tmp/pack_files -name 'dumbo-patroni-callback.sh' | head -1) /usr/local/bin/dumbo-patroni-callback.sh",
       "sudo install -m 0755 -o root -g root $(find /tmp/pack_files -name 'dumbo-cold-boot-check.sh' | head -1) /usr/local/bin/dumbo-cold-boot-check.sh",
+      "sudo install -m 0755 -o root -g root $(find /tmp/pack_files -name 'patroni-upgrade-replica.sh' | head -1) /usr/local/bin/patroni-upgrade-replica.sh",
+      "sudo install -m 0755 -o root -g root $(find /tmp/pack_files -name 'patroni-upgrade-leader.sh' | head -1) /usr/local/bin/patroni-upgrade-leader.sh",
 
       "# Install common scripts and configs (syslog forwarding)",
       "sudo mkdir -p /var/spool/rsyslog",
