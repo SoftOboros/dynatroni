@@ -43,7 +43,7 @@ check_cluster_health() {
     cluster_json=$(get_cluster_json)
 
     local leader_count replica_count
-    leader_count=$(echo "$cluster_json" | jq '[.members[] | select(.role == "leader" and (.state == "running" or .state == "streaming"))] | length')
+    leader_count=$(echo "$cluster_json" | jq '[.members[] | select((.role == "leader" or .role == "primary" or .role == "master") and (.state == "running" or .state == "streaming"))] | length')
     replica_count=$(echo "$cluster_json" | jq '[.members[] | select(.role == "replica" and (.state == "running" or .state == "streaming"))] | length')
 
     if [[ "$leader_count" -ge 1 && "$replica_count" -ge 1 ]]; then

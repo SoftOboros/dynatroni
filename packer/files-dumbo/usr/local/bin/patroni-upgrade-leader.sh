@@ -53,7 +53,7 @@ get_replica_name() {
 get_leader_name() {
     local cluster_json
     cluster_json=$(get_cluster_json)
-    echo "$cluster_json" | jq -r '.members[] | select(.role == "leader") | .name' | head -1
+    echo "$cluster_json" | jq -r '.members[] | select(.role == "leader" or .role == "primary" or .role == "master") | .name' | head -1
 }
 
 # Check cluster health - both leader and replica must be running
@@ -62,7 +62,7 @@ check_cluster_health() {
     cluster_json=$(get_cluster_json)
 
     local leader_count replica_count
-    leader_count=$(echo "$cluster_json" | jq '[.members[] | select(.role == "leader" and (.state == "running" or .state == "streaming"))] | length')
+    leader_count=$(echo "$cluster_json" | jq '[.members[] | select((.role == "leader" or .role == "primary" or .role == "master") and (.state == "running" or .state == "streaming"))] | length')
     replica_count=$(echo "$cluster_json" | jq '[.members[] | select(.role == "replica" and (.state == "running" or .state == "streaming"))] | length')
 
     if [[ "$leader_count" -ge 1 && "$replica_count" -ge 1 ]]; then
@@ -121,7 +121,7 @@ MY_NAME=$(get_my_name)
 MY_ROLE=$(get_my_role)
 echo "$LOG_PREFIX This node: $MY_NAME (role: $MY_ROLE)"
 
-if [[ "$MY_ROLE" != "master" && "$MY_ROLE" != "leader" ]]; then
+if [[ "$MY_ROLE" != "master" && "$MY_ROLE" != "leader" && "$MY_ROLE" != "primary" ]]; then
     echo "$LOG_PREFIX ERROR: This node is not the leader (role: $MY_ROLE)"
     echo "$LOG_PREFIX Run patroni-upgrade-replica.sh on the replica instead"
     exit 1
