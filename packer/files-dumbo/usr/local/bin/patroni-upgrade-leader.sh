@@ -166,17 +166,16 @@ echo "$LOG_PREFIX Switchover successful!"
 show_cluster_status
 echo ""
 
-# Now we are a replica, stop Patroni gracefully
-echo "$LOG_PREFIX Stopping Patroni service (now a replica)..."
-sudo systemctl stop patroni
-
-echo "$LOG_PREFIX Patroni stopped, initiating system shutdown..."
-echo "$LOG_PREFIX SSM session will close. ASG will launch replacement instance."
-
-# Use nohup + disown to ensure shutdown proceeds after script exits
-# This allows SSM to close gracefully before shutdown completes
-nohup sudo shutdown -h +1 "Patroni leader upgrade - launching new instance" &>/dev/null &
+# Schedule shutdown FIRST so the instance always terminates, even if
+# systemctl stop gets interrupted by SSM timeout or other race conditions.
+echo "$LOG_PREFIX Scheduling shutdown in 2 minutes..."
+nohup sudo shutdown -h +2 "Patroni leader upgrade - launching new instance" &>/dev/null &
 disown
 
-echo "$LOG_PREFIX Shutdown scheduled in 1 minute. Exiting script for SSM cleanup."
+# Now we are a replica, stop Patroni gracefully
+echo "$LOG_PREFIX Stopping Patroni service (now a replica)..."
+sudo systemctl stop patroni || echo "$LOG_PREFIX WARNING: Patroni stop returned non-zero (shutdown still scheduled)"
+
+echo "$LOG_PREFIX Patroni stopped, shutdown scheduled."
+echo "$LOG_PREFIX SSM session will close. ASG will launch replacement instance."
 exit 0

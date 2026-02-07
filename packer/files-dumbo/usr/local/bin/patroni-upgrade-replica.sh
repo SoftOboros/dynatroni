@@ -83,20 +83,20 @@ fi
 
 echo "$LOG_PREFIX Cluster is healthy, proceeding with replica upgrade"
 
-# Stop Patroni gracefully - this will:
+# Schedule shutdown FIRST so the instance always terminates, even if
+# systemctl stop gets interrupted by SSM timeout or other race conditions.
+echo "$LOG_PREFIX Scheduling shutdown in 2 minutes..."
+nohup sudo shutdown -h +2 "Patroni replica upgrade - launching new instance" &>/dev/null &
+disown
+
+# Now stop Patroni gracefully - this will:
 # 1. Deregister from DCS (DynamoDB)
 # 2. Stop PostgreSQL gracefully
 # 3. Run on_stop callback
+# If this is interrupted, the scheduled shutdown still fires.
 echo "$LOG_PREFIX Stopping Patroni service..."
-sudo systemctl stop patroni
+sudo systemctl stop patroni || echo "$LOG_PREFIX WARNING: Patroni stop returned non-zero (shutdown still scheduled)"
 
-echo "$LOG_PREFIX Patroni stopped, initiating system shutdown..."
+echo "$LOG_PREFIX Patroni stopped, shutdown scheduled."
 echo "$LOG_PREFIX SSM session will close. ASG will launch replacement instance."
-
-# Use nohup + disown to ensure shutdown proceeds after script exits
-# This allows SSM to close gracefully before shutdown completes
-nohup sudo shutdown -h +1 "Patroni replica upgrade - launching new instance" &>/dev/null &
-disown
-
-echo "$LOG_PREFIX Shutdown scheduled in 1 minute. Exiting script for SSM cleanup."
 exit 0
