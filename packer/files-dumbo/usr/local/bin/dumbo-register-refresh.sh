@@ -39,6 +39,9 @@ if [[ "$ROLE" == "unknown" ]]; then
     exit 0
 fi
 
+# Read version from VERSION file
+INSTANCE_VERSION=$(cat /opt/softoboros/VERSION 2>/dev/null | head -1 | tr -d '[:space:]' || echo "unknown")
+
 # Refresh registration in DynamoDB
 # Note: Must use Patroni venv Python which has boto3 installed
 export PYTHONPATH="/usr/local/lib/softoboros:${PYTHONPATH:-}"
@@ -52,7 +55,7 @@ st.register_participant(
     az='$AZ',
     ip='$PRIVATE_IP',
     role='$ROLE',
-    metadata={'port': 6432},
+    metadata={'port': 6432, 'version': '$INSTANCE_VERSION'},
     ttl_minutes=5,
 )
 " && echo "$LOG_PREFIX role=$ROLE ip=$PRIVATE_IP" || {

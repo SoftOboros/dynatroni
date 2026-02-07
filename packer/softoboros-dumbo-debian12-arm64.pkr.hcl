@@ -39,6 +39,11 @@ variable "dynatroni_ref" {
   description = "Git ref (branch, tag, or commit SHA) for dynatroni install"
 }
 
+variable "git_hash" {
+  type    = string
+  default = "unknown"
+}
+
 locals {
   timestamp = regex_replace(timestamp(), ":|Z|T|\\+.*", "-")
 }
@@ -73,6 +78,7 @@ source "amazon-ebs" "debian12_dumbo_arm64" {
     Component   = "dumbo"
     BaseOS      = "debian-12"
     Arch        = "arm64"
+    GitHash     = var.git_hash
   }
 }
 
@@ -305,6 +311,14 @@ build {
       "echo -e '[Timer]\\nOnCalendar=\\nOnCalendar=*-*-* 00,06,12,18:00:00\\nRandomizedDelaySec=30m' | sudo tee /etc/systemd/system/fstrim.timer.d/override.conf",
 
       "echo '[packer] Configuration files installed'"
+    ]
+  }
+
+  # Write version marker
+  provisioner "shell" {
+    inline = [
+      "sudo mkdir -p /opt/softoboros",
+      "echo '${var.git_hash}' | sudo tee /opt/softoboros/VERSION",
     ]
   }
 
