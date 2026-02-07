@@ -35,7 +35,7 @@ get_cluster_json() {
 
 # Get this node's name and role
 get_my_name() {
-    curl -s http://127.0.0.1:8008/patroni 2>/dev/null | jq -r '.name // "unknown"'
+    curl -s http://127.0.0.1:8008/patroni 2>/dev/null | jq -r '.patroni.name // .name // "unknown"'
 }
 
 get_my_role() {
