@@ -39,28 +39,14 @@ fi
 
 case "$ACTION" in
   register)
-    # Only register primary/master in Cloud Map DNS — replicas must not appear
-    # in dumbo.softoboros-ca since writes would fail on read-only replicas.
-    # The Patroni callback (on_role_change) handles re-registration on failover.
-    PATRONI_ROLE=${PATRONI_ROLE:-}
-    if [[ -z "$PATRONI_ROLE" ]]; then
-      # Try to detect role from Patroni REST API (may not be up yet at boot)
-      PATRONI_ROLE=$(curl -s http://127.0.0.1:8008/patroni 2>/dev/null | jq -r '.role // empty' 2>/dev/null || echo "")
-    fi
-
-    if [[ "$PATRONI_ROLE" == "replica" || "$PATRONI_ROLE" == "standby" ]]; then
-      echo "[dumbo-dns] Role is $PATRONI_ROLE — skipping Cloud Map registration (primary only)"
-    else
-      echo "[dumbo-dns] Registering instance $INSTANCE_ID ($PRIVATE_IP) with Cloud Map (role: ${PATRONI_ROLE:-unknown})..."
-
-      aws servicediscovery register-instance \
-        --region "$REGION" \
-        --service-id "$CLOUDMAP_SERVICE_ID" \
-        --instance-id "$INSTANCE_ID" \
-        --attributes "AWS_INSTANCE_IPV4=$PRIVATE_IP,AWS_INSTANCE_PORT=5432"
-
-      echo "[dumbo-dns] Registration complete: dumbo.softoboros-ca -> $PRIVATE_IP"
-    fi
+    # Cloud Map registration is handled exclusively by the Patroni callback
+    # (dumbo-patroni-callback.sh) which runs on_start, on_stop, and on_role_change.
+    # Only the primary registers in Cloud Map — replicas are excluded so that
+    # dumbo.softoboros-ca always resolves to a writable node.
+    #
+    # This script cannot reliably detect the Patroni role at boot time because
+    # Patroni may not be running yet, so we skip Cloud Map here entirely.
+    echo "[dumbo-dns] Cloud Map registration deferred to Patroni callback (primary-only)"
 
     # Always register with DynamoDB system table (for both primary and replica)
     if [[ -x /usr/local/bin/softoboros-register-participant.sh ]]; then
