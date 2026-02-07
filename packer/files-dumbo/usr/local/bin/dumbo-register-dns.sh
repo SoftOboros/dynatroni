@@ -39,17 +39,30 @@ fi
 
 case "$ACTION" in
   register)
-    echo "[dumbo-dns] Registering instance $INSTANCE_ID ($PRIVATE_IP) with Cloud Map..."
+    # Only register primary/master in Cloud Map DNS — replicas must not appear
+    # in dumbo.softoboros-ca since writes would fail on read-only replicas.
+    # The Patroni callback (on_role_change) handles re-registration on failover.
+    PATRONI_ROLE=${PATRONI_ROLE:-}
+    if [[ -z "$PATRONI_ROLE" ]]; then
+      # Try to detect role from Patroni REST API (may not be up yet at boot)
+      PATRONI_ROLE=$(curl -s http://127.0.0.1:8008/patroni 2>/dev/null | jq -r '.role // empty' 2>/dev/null || echo "")
+    fi
 
-    aws servicediscovery register-instance \
-      --region "$REGION" \
-      --service-id "$CLOUDMAP_SERVICE_ID" \
-      --instance-id "$INSTANCE_ID" \
-      --attributes "AWS_INSTANCE_IPV4=$PRIVATE_IP,AWS_INSTANCE_PORT=5432"
+    if [[ "$PATRONI_ROLE" == "replica" || "$PATRONI_ROLE" == "standby" ]]; then
+      echo "[dumbo-dns] Role is $PATRONI_ROLE — skipping Cloud Map registration (primary only)"
+    else
+      echo "[dumbo-dns] Registering instance $INSTANCE_ID ($PRIVATE_IP) with Cloud Map (role: ${PATRONI_ROLE:-unknown})..."
 
-    echo "[dumbo-dns] Registration complete: dumbo.softoboros-ca -> $PRIVATE_IP"
+      aws servicediscovery register-instance \
+        --region "$REGION" \
+        --service-id "$CLOUDMAP_SERVICE_ID" \
+        --instance-id "$INSTANCE_ID" \
+        --attributes "AWS_INSTANCE_IPV4=$PRIVATE_IP,AWS_INSTANCE_PORT=5432"
 
-    # Also register with DynamoDB system table for infrastructure coordination
+      echo "[dumbo-dns] Registration complete: dumbo.softoboros-ca -> $PRIVATE_IP"
+    fi
+
+    # Always register with DynamoDB system table (for both primary and replica)
     if [[ -x /usr/local/bin/softoboros-register-participant.sh ]]; then
       echo "[dumbo-dns] Registering with system table..."
       /usr/local/bin/softoboros-register-participant.sh register --component dumbo --role "${PATRONI_ROLE:-replica}" || \
