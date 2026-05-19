@@ -145,8 +145,8 @@ build {
 
       "sudo apt-get update -qq",
 
-      "echo '[packer] Installing PostgreSQL 16 + pgvector + pgbouncer'",
-      "sudo apt-get install -y -qq postgresql-16 postgresql-16-pgvector pgbouncer",
+      "echo '[packer] Installing PostgreSQL 16 + pgvector + Apache AGE + pgbouncer'",
+      "sudo apt-get install -y -qq postgresql-16 postgresql-16-pgvector postgresql-16-age pgbouncer",
 
       "# Show installed versions",
       "echo '[packer] Installed PostgreSQL version:'",
