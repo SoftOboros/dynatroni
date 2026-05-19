@@ -33,6 +33,17 @@ variable "security_group_id" {
   default = ""
 }
 
+variable "dynatroni_ref" {
+  type        = string
+  default     = "v0.1.0"
+  description = "Git ref (branch, tag, or commit SHA) for dynatroni install"
+}
+
+variable "git_hash" {
+  type    = string
+  default = "unknown"
+}
+
 locals {
   timestamp = regex_replace(timestamp(), ":|Z|T|\\+.*", "-")
 }
@@ -67,6 +78,7 @@ source "amazon-ebs" "debian12_dumbo_arm64" {
     Component   = "dumbo"
     BaseOS      = "debian-12"
     Arch        = "arm64"
+    GitHash     = var.git_hash
   }
 }
 
@@ -133,8 +145,8 @@ build {
 
       "sudo apt-get update -qq",
 
-      "echo '[packer] Installing PostgreSQL 16 + pgvector + pgbouncer'",
-      "sudo apt-get install -y -qq postgresql-16 postgresql-16-pgvector pgbouncer",
+      "echo '[packer] Installing PostgreSQL 16 + pgvector + Apache AGE + pgbouncer'",
+      "sudo apt-get install -y -qq postgresql-16 postgresql-16-pgvector postgresql-16-age pgbouncer",
 
       "# Show installed versions",
       "echo '[packer] Installed PostgreSQL version:'",
@@ -162,8 +174,8 @@ build {
       "sudo /opt/patroni/bin/pip install patroni boto3 psycopg2-binary",
 
       "# Install dynatroni DynamoDB DCS module from GitHub",
-      "echo '[packer] Installing dynatroni DynamoDB DCS module'",
-      "sudo /opt/patroni/bin/pip install git+https://github.com/SoftOboros/dynatroni.git",
+      "echo '[packer] Installing dynatroni DynamoDB DCS module (ref: ${var.dynatroni_ref})'",
+      "sudo /opt/patroni/bin/pip install git+https://github.com/SoftOboros/dynatroni.git@${var.dynatroni_ref}",
 
       "# Install DynamoDB module into Patroni's DCS namespace (Patroni uses pkgutil discovery)",
       "PATRONI_DCS_PATH=$(/opt/patroni/bin/python -c 'import patroni.dcs; print(patroni.dcs.__path__[0])')",
@@ -228,6 +240,8 @@ build {
       "sudo install -m 0755 -o root -g root $(find /tmp/pack_files -name 'dumbo-patroni-configure.sh' | head -1) /usr/local/bin/dumbo-patroni-configure.sh",
       "sudo install -m 0755 -o root -g root $(find /tmp/pack_files -name 'dumbo-patroni-callback.sh' | head -1) /usr/local/bin/dumbo-patroni-callback.sh",
       "sudo install -m 0755 -o root -g root $(find /tmp/pack_files -name 'dumbo-cold-boot-check.sh' | head -1) /usr/local/bin/dumbo-cold-boot-check.sh",
+      "sudo install -m 0755 -o root -g root $(find /tmp/pack_files -name 'patroni-upgrade-replica.sh' | head -1) /usr/local/bin/patroni-upgrade-replica.sh",
+      "sudo install -m 0755 -o root -g root $(find /tmp/pack_files -name 'patroni-upgrade-leader.sh' | head -1) /usr/local/bin/patroni-upgrade-leader.sh",
 
       "# Install common scripts and configs (syslog forwarding)",
       "sudo mkdir -p /var/spool/rsyslog",
@@ -297,6 +311,14 @@ build {
       "echo -e '[Timer]\\nOnCalendar=\\nOnCalendar=*-*-* 00,06,12,18:00:00\\nRandomizedDelaySec=30m' | sudo tee /etc/systemd/system/fstrim.timer.d/override.conf",
 
       "echo '[packer] Configuration files installed'"
+    ]
+  }
+
+  # Write version marker
+  provisioner "shell" {
+    inline = [
+      "sudo mkdir -p /opt/softoboros",
+      "echo '${var.git_hash}' | sudo tee /opt/softoboros/VERSION",
     ]
   }
 

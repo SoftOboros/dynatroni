@@ -1,4 +1,4 @@
-<p align="center">
+<p align="centre">
   <img src="dynatroni.png" alt="Dynatroni" width="300">
 </p>
 
@@ -35,3 +35,4 @@
 
 ## 0.0.1
 - Initial release extracted from the source monorepo
+```

@@ -1,6 +1,6 @@
 [Unit]
-Description=PostgreSQL/pgbouncer health watchdog
-After=postgresql@16-main.service dumbo-pgbouncer.service
+Description=PostgreSQL/pgbouncer health watchdog (Patroni-aware)
+After=patroni.service dumbo-pgbouncer.service
 
 [Service]
 Type=oneshot

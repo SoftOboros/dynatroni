@@ -19,10 +19,13 @@ if [[ -n "$TOKEN" ]]; then
         "http://169.254.169.254/latest/meta-data/placement/availability-zone" 2>/dev/null)
     PRIVATE_IP=$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" \
         "http://169.254.169.254/latest/meta-data/local-ipv4" 2>/dev/null)
+    AMI_ID=$(curl -sH "X-aws-ec2-metadata-token: $TOKEN" \
+        "http://169.254.169.254/latest/meta-data/ami-id" 2>/dev/null)
 else
     INSTANCE_ID=$(curl -s "http://169.254.169.254/latest/meta-data/instance-id" 2>/dev/null)
     AZ=$(curl -s "http://169.254.169.254/latest/meta-data/placement/availability-zone" 2>/dev/null)
     PRIVATE_IP=$(curl -s "http://169.254.169.254/latest/meta-data/local-ipv4" 2>/dev/null)
+    AMI_ID=$(curl -s "http://169.254.169.254/latest/meta-data/ami-id" 2>/dev/null)
 fi
 
 # Get current role from Patroni
@@ -39,6 +42,9 @@ if [[ "$ROLE" == "unknown" ]]; then
     exit 0
 fi
 
+# Read version from VERSION file
+INSTANCE_VERSION=$(cat /opt/softoboros/VERSION 2>/dev/null | head -1 | tr -d '[:space:]' || echo "unknown")
+
 # Refresh registration in DynamoDB
 # Note: Must use Patroni venv Python which has boto3 installed
 export PYTHONPATH="/usr/local/lib/softoboros:${PYTHONPATH:-}"
@@ -52,7 +58,7 @@ st.register_participant(
     az='$AZ',
     ip='$PRIVATE_IP',
     role='$ROLE',
-    metadata={'port': 6432},
+    metadata={'port': 6432, 'version': '$INSTANCE_VERSION', 'ami_id': '$AMI_ID'},
     ttl_minutes=5,
 )
 " && echo "$LOG_PREFIX role=$ROLE ip=$PRIVATE_IP" || {

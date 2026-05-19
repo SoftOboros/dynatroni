@@ -1,3 +1,4 @@
+```markdown
 <p align="center">
   <img src="../dynatroni.png" alt="Dynatroni" width="300">
 </p>
@@ -11,7 +12,7 @@ This folder contains Packer builds for Patroni + Dynatroni AMIs.
 | Template | Description |
 |----------|-------------|
 | `dynatroni-debian12-arm64.pkr.hcl` | Minimal Patroni + Dynatroni (no PostgreSQL) |
-| `softoboros-dumbo-debian12-arm64.pkr.hcl` | Full stack: PostgreSQL 16 + pgvector + Apache AGE + pgbouncer + Patroni HA |
+| `softoboros-dumbo-debian12-arm64.pkr.hcl` | Full stack: PostgreSQL 16 + pgvector + pgbouncer + Patroni HA |
 
 ## Dynatroni Minimal Build
 
@@ -42,7 +43,6 @@ The Dumbo build creates a production-ready PostgreSQL HA node with:
 
 - PostgreSQL 16 from PGDG
 - pgvector extension for embeddings
-- Apache AGE extension for graph projections
 - pgbouncer connection pooler
 - Patroni HA with DynamoDB DCS (Dynatroni)
 - AWS SSM Agent for secure management
@@ -58,7 +58,7 @@ The Dumbo AMI includes hardening for production stability:
 
 **Tuned services**:
 - `fstrim.timer` – 4x daily instead of weekly (spread IOPS load)
-- `postgresql@16-main` – disabled; Patroni manages PostgreSQL
+- `postgresql @16-main` – disabled; Patroni manages PostgreSQL
 - `pgbouncer` – managed by `dumbo-pgbouncer.service`
 
 **Cold boot protection**:
@@ -100,4 +100,5 @@ Instance user_data supports key=value configuration:
 ```
 # Emergency: force leader promotion (risk of data loss)
 DUMBO_FORCE_LEADER_PROMOTION=true
+```
 ```

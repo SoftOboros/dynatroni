@@ -1,17 +1,17 @@
-<p align="center">
+<p align="centre">
   <img src="../dynatroni.png" alt="Dynatroni" width="320">
 </p>
 
-# Multi‑AZ & Cold Start
+# Multi-AZ & Cold Start
 
-## Multi‑AZ Considerations
+## Multi-AZ Considerations
 
 - **DynamoDB is regional** and highly available; it can be used as the
   cluster arbiter across AZs.
-- **Latency matters**: cross‑AZ latency influences `loop_wait`, `ttl`, and
+- **Latency matters**: cross-AZ latency influences `loop_wait`, `ttl`, and
   `retry_timeout`. Use conservative values when AZs are far apart.
 - **Failure domains**: run at least two nodes in different AZs to tolerate
-  single‑AZ failures.
+  single-AZ failures.
 - **Network partitions**: if the network is unstable, a short `ttl` can cause
   rapid leader churn. Prefer stability over aggressiveness.
 
@@ -54,7 +54,7 @@ On cold boot, each node:
 
 | Setting | Source | Default | Description |
 |---------|--------|---------|-------------|
-| `DUMBO_COLD_BOOT_TIMEOUT` | User data or env var | 300 (5 min) | Max wait time for leader AZ |
+| `DUMBO_COLD_BOOT_TIMEOUT` | User data or env var | 300 (5 min) | Maximum wait time for leader AZ |
 | `DUMBO_FORCE_LEADER_PROMOTION` | User data or env var | false | Skip cold boot check entirely |
 
 **Example user data:**
@@ -79,7 +79,7 @@ the systemd timeout if using a longer cold boot timeout.
 
 If not using the Dumbo AMI or for disaster recovery:
 
-1. **Pick a bootstrap leader** (the most up‑to‑date replica if possible).
+1. **Pick a bootstrap leader** (the most up-to-date replica if possible).
 2. **Start the bootstrap leader alone** and wait for it to acquire leadership.
 3. **Start remaining nodes** and allow them to follow.
 
@@ -88,4 +88,4 @@ confirm data safety.
 
 ## When to Use "Break Glass"
 
-See [Break‑glass promotion](break-glass.md) for emergency promotion options.
+See [Break-glass promotion](break-glass.md) for emergency promotion options.

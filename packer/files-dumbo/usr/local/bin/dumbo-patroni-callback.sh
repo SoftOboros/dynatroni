@@ -127,8 +127,14 @@ check_solo_leader() {
   [[ "$running_count" -le 1 ]]
 }
 
-# Get the EBS volume ID attached to /data
+# Get the EBS volume ID attached to /data (AWS) or from env var (Docker)
 get_data_volume_id() {
+  # Docker: use env var if set
+  if [[ -n "${DUMBO_VOLUME_ID:-}" ]]; then
+    echo "$DUMBO_VOLUME_ID"
+    return
+  fi
+
   local device
   device=$(df /data 2>/dev/null | tail -1 | awk '{print $1}')
   if [[ -z "$device" ]]; then

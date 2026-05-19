@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Health watchdog for PostgreSQL and pgbouncer
+# Health watchdog for PostgreSQL (via Patroni) and pgbouncer
 # Restarts services if they become unhealthy
+#
+# Note: Patroni runs postgres directly as a subprocess, not via systemd.
+# We use Patroni's REST API (port 8008) for health checks and patronictl
+# for restarts to respect HA cluster state.
 
 RESTART_DELAY=5
+PATRONI_CONFIG="/etc/patroni/patroni.yml"
 
 check_postgresql() {
-  # Check if systemd service is active
-  if ! systemctl is-active --quiet postgresql@16-main; then
-    echo "[dumbo-watch] PostgreSQL service not active"
-    return 1
+  # Check Patroni health via REST API (port 8008)
+  # Returns 200 for leader, 503 for replica (both are "healthy" states)
+  if curl -sf "http://127.0.0.1:8008/health" >/dev/null 2>&1; then
+    return 0  # Patroni is healthy
   fi
 
-  # Check if PostgreSQL is accepting connections
-  if ! su - postgres -c "pg_isready -p 5432" >/dev/null 2>&1; then
-    echo "[dumbo-watch] PostgreSQL not accepting connections on port 5432"
-    return 1
+  # Fallback: check if postgres is accepting connections directly
+  # This catches cases where Patroni API is slow but postgres is fine
+  if pg_isready -h 127.0.0.1 -p 5432 -q 2>/dev/null; then
+    return 0
   fi
 
-  return 0
+  echo "[dumbo-watch] PostgreSQL/Patroni unhealthy (REST API and pg_isready failed)"
+  return 1
 }
 
 check_pgbouncer() {
@@ -45,9 +51,19 @@ check_pgbouncer() {
 }
 
 restart_postgresql() {
-  echo "[dumbo-watch] Restarting PostgreSQL..."
-  systemctl restart postgresql@16-main
-  sleep "$RESTART_DELAY"
+  echo "[dumbo-watch] PostgreSQL/Patroni unhealthy, attempting restart..."
+
+  # Use patronictl to restart - respects HA cluster state
+  # The --force flag skips confirmation prompt
+  if /opt/patroni/bin/patronictl -c "$PATRONI_CONFIG" restart softoboros-dumbo --force 2>&1; then
+    echo "[dumbo-watch] patronictl restart initiated"
+    sleep "$RESTART_DELAY"
+  else
+    echo "[dumbo-watch] WARNING: patronictl restart failed, trying systemctl restart patroni"
+    # Fallback: restart the Patroni service itself
+    systemctl restart patroni
+    sleep "$RESTART_DELAY"
+  fi
 }
 
 restart_pgbouncer() {

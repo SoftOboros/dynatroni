@@ -30,7 +30,7 @@ timing parameters are derived from this single value:
 |---------------|-----|-----------|---------------|------------------|----------|
 | 15s | 15s | 5s | 5s | ~24 | Fast failover, higher cost |
 | 60s (default) | 60s | 20s | 20s | ~6 | Balanced |
-| 180s | 180s | 60s | 60s | ~2 | Cost optimized, slower failover |
+| 180s | 180s | 60s | 60s | ~2 | Cost optimised, slower failover |
 
 **Derived timing formulas:**
 - `ttl` = failover_time (leader lock validity window)
@@ -146,7 +146,7 @@ These are typically used by bootstrap scripts or templates:
 
 ## Cold Boot Environment Variables
 
-These control the cold boot leader election behavior. Set via EC2 user data or
+These control the cold boot leader election behaviour. Set via EC2 user data or
 environment variable (env var takes precedence):
 
 | Variable | Default | Description |
@@ -170,7 +170,7 @@ aws ssm put-parameter \
   --overwrite
 ```
 
-See [Multi-AZ & Cold Start](multi-az-and-cold-start.md) for full cold boot behavior.
+See [Multi-AZ & Cold Start](multi-az-and-cold-start.md) for full cold boot behaviour.
 
 ## VPC Network Access
 
@@ -185,7 +185,7 @@ Modify `/etc/postgresql/16/main/pg_hba.conf` for different VPC CIDRs.
 
 ## Runtime Considerations
 
-- **TTL behavior**: Different key types have different TTL multipliers:
+- **TTL behaviour**: Different key types have different TTL multipliers:
   - `leader`: TTL = `failover_time` (lock validity window)
   - `members/*`, `status`: TTL = `failover_time * 2` (survive missed heartbeats)
   - `config`, `sync`, `failover`, `history`, `initialize`, `failsafe`: No TTL (persistent)

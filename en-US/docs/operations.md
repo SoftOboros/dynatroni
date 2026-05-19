@@ -1,3 +1,4 @@
+```markdown
 <p align="center">
   <img src="../dynatroni.png" alt="Dynatroni" width="320">
 </p>
@@ -83,8 +84,8 @@ infrastructure:
 
 | Service | Configuration | Reason |
 |---------|--------------|--------|
-| `fstrim.timer` | 4x daily (00:00, 06:00, 12:00, 18:00) | Spread TRIM load vs weekly spike |
-| `postgresql@16-main` | Disabled | Patroni manages PostgreSQL lifecycle |
+| `fstrim.timer` | 4x daily (00:00, 06:00, 12:00, 18:00) | Spread TRIM load versus weekly spike |
+| `postgresql @16-main` | Disabled | Patroni manages PostgreSQL lifecycle |
 | `pgbouncer` | Disabled (default) | Managed by `dumbo-pgbouncer.service` |
 
 ### SSM Agent
@@ -193,7 +194,7 @@ aws ssm send-command \
 ```makefile
 # Upgrade replica - find replica instance and run upgrade script
 patroni-upgrade-replica:
-	@REGION=$${AWS_REGION:-ca-central-1}; \
+	 @REGION=$${AWS_REGION:-ca-central-1}; \
 	ASG_NAME=$${PATRONI_ASG:-my-patroni-asg}; \
 	echo "Finding replica instance..."; \
 	REPLICA_INSTANCE=""; \
@@ -231,7 +232,7 @@ patroni-upgrade-replica:
 
 # Upgrade leader - find leader, run switchover + upgrade script
 patroni-upgrade-leader:
-	@REGION=$${AWS_REGION:-ca-central-1}; \
+	 @REGION=$${AWS_REGION:-ca-central-1}; \
 	ASG_NAME=$${PATRONI_ASG:-my-patroni-asg}; \
 	echo "Finding leader instance..."; \
 	LEADER_INSTANCE=""; \
@@ -308,3 +309,4 @@ See [Configuration](configuration.md) for the failover_time derivation table.
   increase `DUMBO_COLD_BOOT_TIMEOUT` (default 300s) in user_data if the last leader's
   AZ is slow to start; use `DUMBO_FORCE_LEADER_PROMOTION=true` only as last resort.
 - **Testing mismatch**: etcd‑based local tests don't validate Dynatroni. Use DynamoDB Local or a dev table when possible.
+```

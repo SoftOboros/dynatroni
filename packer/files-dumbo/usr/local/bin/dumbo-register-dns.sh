@@ -39,17 +39,16 @@ fi
 
 case "$ACTION" in
   register)
-    echo "[dumbo-dns] Registering instance $INSTANCE_ID ($PRIVATE_IP) with Cloud Map..."
+    # Cloud Map registration is handled exclusively by the Patroni callback
+    # (dumbo-patroni-callback.sh) which runs on_start, on_stop, and on_role_change.
+    # Only the primary registers in Cloud Map — replicas are excluded so that
+    # dumbo.softoboros-ca always resolves to a writable node.
+    #
+    # This script cannot reliably detect the Patroni role at boot time because
+    # Patroni may not be running yet, so we skip Cloud Map here entirely.
+    echo "[dumbo-dns] Cloud Map registration deferred to Patroni callback (primary-only)"
 
-    aws servicediscovery register-instance \
-      --region "$REGION" \
-      --service-id "$CLOUDMAP_SERVICE_ID" \
-      --instance-id "$INSTANCE_ID" \
-      --attributes "AWS_INSTANCE_IPV4=$PRIVATE_IP,AWS_INSTANCE_PORT=5432"
-
-    echo "[dumbo-dns] Registration complete: dumbo.softoboros-ca -> $PRIVATE_IP"
-
-    # Also register with DynamoDB system table for infrastructure coordination
+    # Always register with DynamoDB system table (for both primary and replica)
     if [[ -x /usr/local/bin/softoboros-register-participant.sh ]]; then
       echo "[dumbo-dns] Registering with system table..."
       /usr/local/bin/softoboros-register-participant.sh register --component dumbo --role "${PATRONI_ROLE:-replica}" || \
