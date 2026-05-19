@@ -33,10 +33,10 @@ variable "security_group_id" {
   default = ""
 }
 
-variable "dynatroni_ref" {
+variable "dynatroni_version" {
   type        = string
-  default     = "v0.1.0"
-  description = "Git ref (branch, tag, or commit SHA) for dynatroni install"
+  default     = "0.1.0"
+  description = "PyPI version of dynatroni to install (PEP 440 spec body, e.g. 0.1.0 or 0.2.*)"
 }
 
 variable "git_hash" {
@@ -165,17 +165,17 @@ build {
       "set -uxo pipefail",
       "echo '[packer] Installing Patroni for PostgreSQL HA'",
 
-      "# Install Python pip and dependencies (git needed for pip install from GitHub)",
-      "sudo apt-get install -y -qq git python3-pip python3-venv python3-psycopg2",
+      "# Install Python pip and dependencies",
+      "sudo apt-get install -y -qq python3-pip python3-venv python3-psycopg2",
 
       "# Install Patroni with DynamoDB DCS in a virtual environment",
       "sudo python3 -m venv /opt/patroni",
       "sudo /opt/patroni/bin/pip install --upgrade pip",
       "sudo /opt/patroni/bin/pip install patroni boto3 psycopg2-binary",
 
-      "# Install dynatroni DynamoDB DCS module from GitHub",
-      "echo '[packer] Installing dynatroni DynamoDB DCS module (ref: ${var.dynatroni_ref})'",
-      "sudo /opt/patroni/bin/pip install git+https://github.com/SoftOboros/dynatroni.git@${var.dynatroni_ref}",
+      "# Install dynatroni DynamoDB DCS module from PyPI",
+      "echo '[packer] Installing dynatroni DynamoDB DCS module (version: ${var.dynatroni_version})'",
+      "sudo /opt/patroni/bin/pip install 'dynatroni==${var.dynatroni_version}'",
 
       "# Install DynamoDB module into Patroni's DCS namespace (Patroni uses pkgutil discovery)",
       "PATRONI_DCS_PATH=$(/opt/patroni/bin/python -c 'import patroni.dcs; print(patroni.dcs.__path__[0])')",
