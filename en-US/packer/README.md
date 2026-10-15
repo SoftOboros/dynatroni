@@ -6,9 +6,8 @@
 
 This folder contains Packer builds for Patroni + Dynatroni AMIs.
 
-Both templates require a published Dynatroni 0.1.1 or later. Version 0.1.1 is
-being prepared on the `v0.1.1` branch; publish the package before building these
-AMIs. Installation supplies the `patroni.dcs.dynamodb` adapter, and each build
+Both templates require Dynatroni 0.1.1 or later installed from PyPI.
+Installation supplies the `patroni.dcs.dynamodb` adapter, and each build
 checks Patroni's discovery before continuing. No manual backend copy is needed.
 
 ## Available Builds

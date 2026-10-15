@@ -14,10 +14,9 @@ python3 -m venv .venv
 python -m pip install --upgrade 'dynatroni>=0.1.1' 'patroni[psycopg3]'
 ```
 
-Version 0.1.1 is the next release. Until it is published, install from a checkout
-containing this fix with `python -m pip install . 'patroni[psycopg3]'` in the
-activated environment. The Patroni extra installs a PostgreSQL driver; keep an
-existing supported driver if one is already installed.
+Version 0.1.1 includes the discovery fix for issue #2. The Patroni extra installs
+a PostgreSQL driver; keep an existing supported driver if one is already installed.
+For a source checkout, see [Verify a source change](#verify-a-source-change).
 
 Dynatroni requires Patroni 3.3.0 or later. Earlier versions lack DCS APIs used by
 the implementation.

@@ -4,7 +4,7 @@
 
 # Changelog
 
-## 0.1.1 (unreleased)
+## 0.1.1 (2026-10-15)
 
 - Fix issue #2: install a `patroni.dcs.dynamodb` adapter so Patroni's module scan
   discovers DynamoDB after a normal wheel or source installation.

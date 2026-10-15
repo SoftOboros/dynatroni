@@ -1,6 +1,7 @@
 # Version 0.1.1 release preparation
 
-Status: prepared on branch `v0.1.1`; PyPI publication is pending.
+Status: publication authorized from branch `v0.1.1`; PyPI readback and fresh-install
+verification are pending.
 
 The package installs a discovery adapter for issue #2 and requires Patroni 3.3.0
 or later. The backend implementation and its cluster behavior are unchanged.
