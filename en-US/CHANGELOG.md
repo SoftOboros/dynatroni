@@ -14,7 +14,7 @@
 - Check installed artifacts in CI, including discovery, DCS construction with
   mocked AWS clients, and uninstall behavior.
 - Correct the quickstart and replace the AMI's manual backend copy with a
-  discovery check. AMI builds require publication of 0.1.1 first.
+  discovery check.
 
 ## 0.1.0
 
