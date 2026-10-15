@@ -299,6 +299,10 @@ See [Configuration](configuration.md) for the failover_time derivation table.
 
 ## Common Issues
 
+- **DynamoDB backend unavailable**: if the available implementations omit
+  `dynamodb`, follow the [installation and discovery checks](install.md#troubleshoot-a-missing-backend)
+  with the service's Python interpreter. Version 0.1.1 fixes the missing adapter
+  in 0.1.0. Discovery failure happens before AWS table access is tested.
 - **Access denied**: confirm IAM permissions for DynamoDB actions.
 - **Wrong region**: ensure `AWS_REGION` or `dynamodb.region` matches the table's region.
 - **Leader churn**: increase `failover_time` if the cluster is unstable (default: 60s).

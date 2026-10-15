@@ -1,4 +1,3 @@
-```markdown
 <p align="center">
   <img src="../dynatroni.png" alt="Dynatroni" width="300">
 </p>
@@ -6,6 +5,11 @@
 # Dynatroni Packer Build
 
 This folder contains Packer builds for Patroni + Dynatroni AMIs.
+
+Both templates require a published Dynatroni 0.1.1 or later. Version 0.1.1 is
+being prepared on the `v0.1.1` branch; publish the package before building these
+AMIs. Installation supplies the `patroni.dcs.dynamodb` adapter, and each build
+checks Patroni's discovery before continuing. No manual backend copy is needed.
 
 ## Available Builds
 
@@ -100,5 +104,4 @@ Instance user_data supports key=value configuration:
 ```
 # Emergency: force leader promotion (risk of data loss)
 DUMBO_FORCE_LEADER_PROMOTION=true
-```
 ```

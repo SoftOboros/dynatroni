@@ -9,7 +9,8 @@ setup, configuration, deployment considerations, and operational runbooks.
 
 ## Table of Contents
 
-- [Install & quickstart](install.md)
+- [Install & quickstart](install.md) — environment setup, backend discovery,
+  upgrades from 0.1.0, and missing-backend troubleshooting
 - [DynamoDB setup](dynamodb.md)
   - [Leader election deep dive](dynamodb.md#leader-election-deep-dive) — how atomic operations ensure single-leader
 - [Configuration & environment](configuration.md)

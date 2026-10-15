@@ -35,8 +35,8 @@ variable "security_group_id" {
 
 variable "dynatroni_version" {
   type        = string
-  default     = "0.1.0"
-  description = "PyPI version of dynatroni to install (PEP 440 spec body, e.g. 0.1.0 or 0.2.*)"
+  default     = "0.1.1"
+  description = "Published PyPI version of dynatroni to install (requires 0.1.1 or later for DCS discovery)"
 }
 
 variable "git_hash" {
@@ -177,11 +177,8 @@ build {
       "echo '[packer] Installing dynatroni DynamoDB DCS module (version: ${var.dynatroni_version})'",
       "sudo /opt/patroni/bin/pip install 'dynatroni==${var.dynatroni_version}'",
 
-      "# Install DynamoDB module into Patroni's DCS namespace (Patroni uses pkgutil discovery)",
-      "PATRONI_DCS_PATH=$(/opt/patroni/bin/python -c 'import patroni.dcs; print(patroni.dcs.__path__[0])')",
-      "echo \"Installing DynamoDB DCS module to $PATRONI_DCS_PATH\"",
-      "sudo cp /opt/patroni/lib/python*/site-packages/dynatroni/dynamodb.py $PATRONI_DCS_PATH/dynamodb.py",
-      "sudo chmod 644 $PATRONI_DCS_PATH/dynamodb.py",
+      "# The package owns the discovery adapter; fail the build if it is unavailable",
+      "sudo /opt/patroni/bin/python -c 'from patroni.dcs import iter_dcs_classes; assert \"dynamodb\" in dict(iter_dcs_classes({\"dynamodb\": {}}))'",
 
       "# Create symlink for patroni binary",
       "sudo ln -sf /opt/patroni/bin/patroni /usr/local/bin/patroni",

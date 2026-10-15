@@ -1,2 +1,2 @@
-patroni>=3.0.0
+patroni>=3.3.0
 boto3>=1.26.0

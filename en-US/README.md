@@ -28,8 +28,13 @@ Patroni PostgreSQL HA.
 ## Installation
 
 ```bash
-pip install dynatroni
+python -m pip install --upgrade 'dynatroni>=0.1.1' 'patroni[psycopg3]'
 ```
+
+Version 0.1.1 is the next release; before publication, use a checkout containing
+the fix and run `python -m pip install . 'patroni[psycopg3]'`. Install into the same
+virtual environment that runs Patroni. See [Install & quickstart](docs/install.md)
+for the discovery check, source installation, and troubleshooting.
 
 ## DynamoDB Table Setup
 

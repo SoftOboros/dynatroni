@@ -26,6 +26,13 @@ jobs:
           pip install build
           python -m build
 
+      - name: Verify release artifacts without AWS
+        run: |
+          python -I -m pip install dist/*.whl 'patroni[psycopg3]'
+          python -I tests/test_installed_discovery.py
+          python -I -m pip install --force-reinstall --no-deps dist/*.tar.gz
+          python -I tests/test_installed_discovery.py
+
       - name: Publish to PyPI (OIDC)
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

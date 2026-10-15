@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dynatroni"
-version = "0.1.0"
+version = "0.1.1"
 description = "DynamoDB DCS backend for Patroni PostgreSQL HA"
 readme = "README.md"
 license = {text = "MIT"}
@@ -26,16 +26,15 @@ classifiers = [
     "Topic :: System :: Clustering",
 ]
 dependencies = [
-    "patroni>=3.0.0",
+    "patroni>=3.3.0",
     "boto3>=1.26.0",
 ]
-
-[project.entry-points."patroni.dcs"]
-dynamodb = "dynatroni.dynamodb:DynamoDB"
 
 [project.urls]
 Homepage = "https://github.com/softoboros/dynatroni"
 Source = "https://github.com/softoboros/dynatroni"
 
 [tool.setuptools.packages.find]
-include = ["dynatroni*"]
+include = ["dynatroni*", "patroni.dcs"]
+# Install only the adapter under Patroni's package; Patroni owns its __init__.py files.
+namespaces = true

@@ -1,8 +1,20 @@
-<p align="centre">
+<p align="center">
   <img src="dynatroni.png" alt="Dynatroni" width="300">
 </p>
 
 # Changelog
+
+## 0.1.1 (unreleased)
+
+- Fix issue #2: install a `patroni.dcs.dynamodb` adapter so Patroni's module scan
+  discovers DynamoDB after a normal wheel or source installation.
+- Remove the unused `patroni.dcs` entry point and retain a single implementation
+  in `dynatroni.dynamodb`.
+- Require Patroni 3.3.0 or later, matching the DCS APIs used by the backend.
+- Check installed artifacts in CI, including discovery, DCS construction with
+  mocked AWS clients, and uninstall behavior.
+- Correct the quickstart and replace the AMI's manual backend copy with a
+  discovery check. AMI builds require publication of 0.1.1 first.
 
 ## 0.1.0
 
@@ -35,4 +47,3 @@
 
 ## 0.0.1
 - Initial release extracted from the source monorepo
-```
